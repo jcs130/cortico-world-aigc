@@ -1,0 +1,152 @@
+{
+  "tools": [
+    {
+      "name": "aigc_create",
+      "description": "Image, video and music creation through explicitly configured providers. Read capabilities first. generate needs kind, a final host-written prompt and stable request_id. References use Core/Persona handles with explicit roles; put one edit-target/scene-layout first, identity sheets after it. parameters are provider-specific. Returns accepted job id, not goal completion or playback. status/read/inputs/list query original evidence, wait is cancellable without cancelling the job, cancel closes local work but remote computation may continue. Unknown submissions are never retried automatically. No hidden planner, game connection, voice identity guarantee or automatic publishing.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "capabilities",
+              "generate",
+              "status",
+              "read",
+              "inputs",
+              "list",
+              "wait",
+              "cancel"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video",
+              "music"
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "references": {
+            "type": "array",
+            "maxItems": 14,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handle",
+                "role"
+              ],
+              "properties": {
+                "handle": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "edit-target",
+                    "scene-layout",
+                    "identity",
+                    "style",
+                    "motion",
+                    "audio"
+                  ]
+                },
+                "entityId": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "string"
+                },
+                "view": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "world": {
+                      "type": "string"
+                    },
+                    "captureId": {
+                      "type": "string"
+                    },
+                    "observedAt": {
+                      "type": "string"
+                    },
+                    "realm": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60000
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": "制作图片、视频或歌曲，并核对异步任务及原始素材"
+    },
+    {
+      "name": "aigc_help",
+      "description": "Read the bundled imagegen-derived creative guide: reference roles, prompt structure, preserving scene/camera/identity, output inspection, and image/video/music workflow. Does not call a model or read Persona memory.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": "学习参考图分工、提示词组织和创作验收"
+    }
+  ],
+  "events": [
+    {
+      "type": "aigc.job",
+      "description": "Archived creation job terminal outcome and generated media; no playback, adoption or goal completion is implied.",
+      "trigger": "flush"
+    }
+  ],
+  "prompts": [
+    {
+      "key": "worlds.aigc.env",
+      "title": "AIGC 创作能力",
+      "role": "envPrompt",
+      "content": "You can create images, videos and music using aigc_create. First read capabilities; only explicitly configured providers are available. Read aigc_help for creative prompting and reference roles.\n\nPersona owns identity, known people, memory and artistic choices. If appearance_lookup is provided by Persona, select confirmed identity references there and pass their handles/revisions explicitly. The AIGC World does not inspect memory, other World files, ports or game state.\n\nFor an enhanced game photo, ask the game World for an ordinary screenshot plus historical scene/camera evidence, optionally a voxel proxy. Pass the chosen scene as reference 1 and identity references after it. Preserve the requested landmarks, action and camera; choose the composition and style yourself. Ordinary photography remains a game capability without a model. Original creations need no game.\n\nAccepted is not completed. Use original job ids and status/read/wait or aigc.job events, then inspect the actual artifact before adoption. inputs retrieves raw prompts and original references. Preserve originals; distinguish observed facts from invented details. Creation does not publish or play anything. Use the relevant chat/performance World for that after choosing the finished result. Cancel waiting separately from cancelling a job; local cancellation does not prove remote work stopped.\n"
+    }
+  ]
+}

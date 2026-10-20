@@ -1,0 +1,34 @@
+{
+  "enabled": false,
+  "image": {
+    "provider": "bailian",
+    "endpoint": "https://WORKSPACE.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "model": "qwen-image-2.1-pro",
+    "apiKeyEnv": "AIGC_IMAGE_KEY",
+    "generate": true,
+    "edit": true,
+    "maxReferences": 10,
+    "timeoutMs": 600000,
+    "resultHosts": "CONFIGURE_EXACT_RESULT_HOST"
+  },
+  "video": {
+    "provider": "bailian-wan27",
+    "endpoint": "https://WORKSPACE.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis",
+    "model": "wan2.7-t2v-2026-06-12",
+    "apiKeyEnv": "AIGC_VIDEO_KEY",
+    "resultHosts": ["CONFIGURE_EXACT_RESULT_HOST"],
+    "timeoutMs": 1800000,
+    "pollMs": 15000,
+    "maxReferences": 0
+  },
+  "music": {
+    "provider": "fal-music",
+    "endpoint": "https://queue.fal.run/fal-ai/minimax-music/v2.6",
+    "model": "fal-ai/minimax-music/v2.6",
+    "apiKeyEnv": "AIGC_MUSIC_KEY",
+    "resultHosts": ["CONFIGURE_EXACT_RESULT_HOST"],
+    "timeoutMs": 1800000,
+    "pollMs": 5000,
+    "maxReferences": 0
+  }
+}

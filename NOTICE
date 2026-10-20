@@ -1,0 +1,12 @@
+AIGC creation core and Cortico adapter: Copyright 2026 jcs130.
+
+The image provider adapters and FLUX 3 graph were migrated from
+jcs130/minecraft-ai-friend/packages/agent-mc-world at 40dc71f7,
+under the MIT license retained in LICENSE. The new package maintains this
+source directly; builds do not extract or patch another repository.
+
+The creative workflow guide adapts reference-role, intent, prompt-structure,
+invariant-preservation and review principles from OpenAI's imagegen skill,
+Copyright OpenAI, under Apache License 2.0. Full source license is retained
+in licenses/imagegen-Apache-2.0.txt. The guide is adapted, not an assertion
+that Cortico owns the Codex image_gen tool or its authentication.
