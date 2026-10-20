@@ -7,6 +7,7 @@ import { prepareCreativeContext } from '../src/core/prompt.ts';
 import { aigcDefaults } from '../src/core/providers.ts';
 import { AppearanceLibrary, appearanceTool } from '../src/persona/index.ts';
 import definition, { AigcWorld } from '../src/index.ts';
+import { CreationProviderError } from '../src/core/errors.ts';
 import type { CreationHost, GenerationPort, MediaBytes } from '../src/contracts.ts';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6NQAAAABJRU5ErkJggg==', 'base64');
 const image = { bytes: png, mime: 'image/png' };
@@ -36,9 +37,14 @@ it('preserves ordered scene/identity references, raw prompt, effective prompt an
     effectivePrompt: expect.stringContaining('Reference 2: identity'), references: [expect.objectContaining(refs[0]), expect.objectContaining(refs[1])],
     evidence: { contentApproved: false, playbackVerified: false, singingVoiceVerified: false } });
   expect(result.blobs?.[0]).toMatchObject(image);
+  const repeated = await r.studio.execute({ ...request, references: refs });
+  expect(repeated.blobs).toBeUndefined();
+  expect(JSON.parse((await r.studio.execute({ action: 'list' })).text)[0]).not.toHaveProperty('prompt');
   const inputs = await r.studio.execute({ action: 'inputs', id: job.id });
   expect(inputs.blobs).toHaveLength(2);
   expect(r.host.pushEvent.mock.calls[0]?.[1]).toEqual({ trigger: 'flush' });
+  expect(r.host.pushEvent.mock.calls[0]?.[0].blobs).toBeUndefined();
+  expect(JSON.parse(r.host.pushEvent.mock.calls[0]?.[0].text).artifacts[0].bytes).toBe(png.length);
   r.studio.stop();
 });
 it('deduplicates canonical requests and rejects changed semantics', async () => {
@@ -100,6 +106,31 @@ it('disabled providers and metadata calls make zero network calls', async () => 
   expect(world.tools().map(t => t.name)).toEqual(definition.describe!.tools!.map(t => t.name));
   expect(world.envPromptVars()).toEqual({}); await world.stop(); expect(network).not.toHaveBeenCalled();
 });
+it('keeps confirmed failure distinct from an uncertain transport outcome and never resubmits either', async () => {
+  for (const [error, status, remoteOutcome] of [
+    [new CreationProviderError('provider failed', 'original-task', 'failed', { providerState: 'FAILED' }), 'failed', 'confirmed'],
+    [new CreationProviderError('provider cancelled', 'original-task', 'cancelled'), 'cancelled', 'confirmed'],
+    [new CreationProviderError('transport lost', 'original-task'), 'unknown', 'unknown'],
+  ] as const) {
+    const generate = vi.fn(async () => { throw error; }), r = rig(generate);
+    const accepted = JSON.parse((await r.studio.execute(request)).text);
+    await finished(r.studio, accepted.id);
+    expect(r.studio.get(accepted.id)).toMatchObject({ status, remoteOutcome, providerRequestId: 'original-task' });
+    await r.studio.execute(request); expect(generate).toHaveBeenCalledOnce(); r.studio.stop();
+  }
+});
+it('exposes a read-only query tool and rejects unknown provider parameters before dispatch', async () => {
+  const r = rig(); r.provider.capabilities.parameterKeys = ['size'];
+  expect((await r.studio.execute({ ...request, parameters: { seed: 3 } })).failed).toBe(true);
+  expect(r.provider.generate).not.toHaveBeenCalled(); expect(r.studio.list()).toEqual([]); r.studio.stop();
+  const world = new AigcWorld(aigcDefaults); await world.start(fakeHost() as any);
+  const query = world.tools().find(t => t.name === 'aigc_query')!;
+  expect(query.tags).toEqual(['read']); expect(query.barrierAfter).not.toBe(true);
+  expect((await query.handler(request, {} as any)) as any).toMatchObject({ failed: true });
+  const queried = await query.handler({ action: 'capabilities' }, {} as any);
+  expect(JSON.parse(typeof queried === 'string' ? queried : queried.text).playback).toBe(false);
+  await world.stop();
+});
 it('keeps Persona appearance memory explicit and revisioned across Worlds', async () => {
   let entries: any[] = [];
   const library = new AppearanceLibrary({ read: () => entries, write: value => { entries = value; } });
@@ -115,4 +146,6 @@ it('keeps prompt prefix stable and accounts for tools, media and output reserve'
   const b = prepareCreativeContext({ intent: 'photo', references: [], facts: { camera: { pitch: 1 } } }, budget);
   expect(a.system).toBe(b.system); expect(a.user).not.toBe(b.user);
   expect(() => prepareCreativeContext({ intent: 'x', references: [], facts: {} }, { ...budget, contextTokens: 1000 })).toThrow('budget');
+  expect(() => prepareCreativeContext({ intent: 'x', references: [{ handle:'mem:self',role:'identity' }], facts: {} },
+    { ...budget, imageInputTokens:0 })).toThrow('budget');
 });

@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { AigcStudio } from '../core/studio.ts';
-import { AIGC_TOOL_DECLS } from '../tools.ts';
+import { AIGC_TOOL_DECLS, queryOnly } from '../tools.ts';
 import type { CreationEvent } from '../contracts.ts';
 const uri = (id: string) => 'aigc://artifacts/' + id;
 /** MCP transports the same event evidence; large media remain retrievable resources. */
@@ -20,11 +20,14 @@ export function createAigcMcpServer(studio: AigcStudio, guide: string) {
   const server = new Server({ name: 'agent-aigc', version: '0.1.0' }, { capabilities: { tools: {}, resources: {}, logging: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: AIGC_TOOL_DECLS.map(d => ({
     name: d.name, description: d.description, inputSchema: d.parameters,
+    annotations: { readOnlyHint: (d.tags as string[]).includes('read') },
   })) }));
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     if (request.params.name === 'aigc_help') return { content: [{ type: 'text', text: guide }] };
-    if (request.params.name !== 'aigc_create') return { isError: true, content: [{ type: 'text', text: 'Unknown AIGC tool' }] };
-    const outcome = await studio.execute(request.params.arguments ?? {}, { signal: extra.signal });
+    if (!['aigc_create','aigc_query'].includes(request.params.name)) return { isError: true, content: [{ type: 'text', text: 'Unknown AIGC tool' }] };
+    const outcome = request.params.name === 'aigc_query' && !queryOnly(request.params.arguments ?? {})
+      ? { text: 'Query tool accepts read actions only', failed: true as const, blobs: undefined }
+      : await studio.execute(request.params.arguments ?? {}, { signal: extra.signal });
     let data: any;
     try { data = JSON.parse(outcome.text); } catch { data = { error: outcome.text }; }
     const content: any[] = [{ type: 'text', text: outcome.text }];
@@ -40,6 +43,7 @@ export function createAigcMcpServer(studio: AigcStudio, guide: string) {
     resources: studio.list().flatMap(j => j.artifacts.map(a => ({ uri: uri(a.id), name: a.name, mimeType: a.mime }))),
   }));
   server.setRequestHandler(ReadResourceRequestSchema, async request => {
+    if (!/^aigc:\/\/artifacts\/[a-f0-9-]{36}-output-\d{1,2}$/.test(request.params.uri)) throw new Error('Invalid AIGC resource URI');
     const id = request.params.uri.replace(/^aigc:\/\/artifacts\//, '');
     const asset = studio.readArtifact(id);
     if (!asset) throw new Error('AIGC artifact not found');

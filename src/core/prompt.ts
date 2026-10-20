@@ -16,14 +16,16 @@ export const CREATIVE_PLANNER_SYSTEM = 'Plan an explicit image, video or song cr
   + 'Generated media does not prove a real event, content correctness, singer identity, successful playback or goal completion.';
 export function prepareCreativeContext(input: {
   intent: string; references: readonly MediaReference[]; facts: Readonly<Record<string, unknown>>;
-}, budget: { contextTokens: number; reservedOutputTokens: number; toolDescriptions?: string; imageInputTokens: number;
+}, budget: { contextTokens: number; reservedOutputTokens: number; toolDescriptions: string; imageInputTokens: number;
   countTokens?: (text: string) => number }) {
   const user = JSON.stringify({ schema: 'agent-aigc-context/v1', ...input });
   const count = budget.countTokens ?? ((text: string) => Buffer.byteLength(text, 'utf8'));
   const usedTokens = count(CREATIVE_PLANNER_SYSTEM) + count(user) + count(budget.toolDescriptions ?? '')
     + budget.imageInputTokens + budget.reservedOutputTokens;
   if (![budget.contextTokens, budget.reservedOutputTokens, budget.imageInputTokens, usedTokens].every(Number.isFinite)
+    || typeof budget.toolDescriptions !== 'string'
     || budget.contextTokens <= 0 || budget.reservedOutputTokens <= 0 || budget.imageInputTokens < 0
+    || input.references.length > 0 && budget.imageInputTokens === 0
     || usedTokens > budget.contextTokens) throw new Error('Creative context exceeds input budget including tools, media and output reserve');
   return { system: CREATIVE_PLANNER_SYSTEM, user, usedTokens };
 }

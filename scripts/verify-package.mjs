@@ -5,7 +5,7 @@ for (const path of ['dist/index.js', 'dist/core/index.js', 'dist/contracts.d.ts'
   'dist/mcp/server.js', 'dist/mcp/stdio.js', 'dist/ENV_PROMPT.md', 'skills/imagegen/SKILL.md', 'describe.json', 'LICENSE', 'NOTICE'])
   assert.ok(existsSync(path), 'Missing package artifact ' + path);
 const describe = JSON.parse(readFileSync('describe.json', 'utf8'));
-assert.deepEqual(describe.tools.map(t => t.name).sort(), ['aigc_create', 'aigc_help']);
+assert.deepEqual(describe.tools.map(t => t.name).sort(), ['aigc_create', 'aigc_help', 'aigc_query']);
 assert.deepEqual(describe.events.map(t => t.type), ['aigc.job']);
 const manifest = JSON.parse(readFileSync('dist/build.json', 'utf8'));
 for (const row of [...manifest.source, ...manifest.files])

@@ -2,7 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Flux3Configuration, ImageProviderConfig, ImageGenerationPort, ImageGenerationRequest } from '../contracts.ts';
-import { boundedBody, imageMime, validateArtImage, ImageGenerationError } from './image-generation.ts';
+import { boundedBody } from './http.ts';
+import { imageMime, validateArtImage } from './media.ts';
+import { ImageGenerationError } from './errors.ts';
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 const dimensions = (width: number, height: number) => [width, height].every(n => Number.isInteger(n) && n >= 256 && n <= 2048 && n % 16 === 0);
@@ -42,6 +44,7 @@ export function buildFlux3Graph(config: Flux3Configuration, request: ImageGenera
 }
 
 export function createComfyFlux3Port(config: ImageProviderConfig, options: { fetch?: typeof fetch; env?: Record<string, string | undefined> } = {}): ImageGenerationPort {
+  config = structuredClone(config);
   validateFlux3Configuration(config.flux3);
   const models = structuredClone(config.flux3), endpoint = new URL(config.endpoint);
   const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname);
@@ -105,7 +108,7 @@ export function createComfyFlux3Port(config: ImageProviderConfig, options: { fet
           signal.throwIfAborted();
           const history = (await api('history/' + promptId))[promptId!];
           if (history) {
-            if (history.status?.status_str === 'error') throw new ImageGenerationError('FLUX 3 execution failed; inspect provider history', promptId);
+            if (history.status?.status_str === 'error') throw new ImageGenerationError('FLUX 3 execution failed; inspect provider history', promptId, 'failed', { providerState: 'error' });
             if (history.status?.completed === true && history.status?.status_str === 'success') {
               // Read only the output node we submitted, never an intermediate preview or arbitrary history URL.
               const images = history.outputs?.['10']?.images;

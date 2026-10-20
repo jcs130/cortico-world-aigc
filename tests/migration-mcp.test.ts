@@ -37,9 +37,13 @@ it('preserves SDK/MCP job identity, binary outputs, resource lookup, original in
   studio.start({ blob: () => ({ bytes: png, mime: 'image/png' }), pushEvent: event => deliverAigcMcpEvent(server, event), log: { warn: () => {} } });
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   try {
+    expect((await client.listTools()).tools.find(t => t.name === 'aigc_query')?.annotations?.readOnlyHint).toBe(true);
     const accepted = await client.callTool({ name: 'aigc_create', arguments: { action: 'generate', kind: 'image', prompt: 'A village',
       request_id: 'one', references: [{ handle: 'mem:self', role: 'identity' }] } });
     const id = (accepted.structuredContent as any).result.id;
+    const rejected = await client.callTool({ name: 'aigc_query', arguments: { action: 'cancel', id } });
+    expect(rejected.isError).toBe(true);
+    expect((rejected.structuredContent as any).turnEnded).toBe(false);
     expect((accepted.structuredContent as any).turnEnded).toBe(false);
     expect((accepted.structuredContent as any).goalCompleted).toBe(false);
     await studio.execute({ action: 'wait', id });
@@ -56,5 +60,8 @@ it('preserves SDK/MCP job identity, binary outputs, resource lookup, original in
     expect((resource.contents[0] as any).blob).toBe(png.toString('base64'));
     const inputs = await client.callTool({ name: 'aigc_create', arguments: { action: 'inputs', id } });
     expect((inputs.content as any[]).some(p => p.type === 'image')).toBe(true);
+    const query = await client.callTool({ name: 'aigc_query', arguments: { action: 'status', id } });
+    expect((query.structuredContent as any).result).toEqual(sdk);
+    await expect(client.readResource({ uri: 'other://artifacts/' + sdk.artifacts[0].id })).rejects.toThrow('Invalid AIGC');
   } finally { studio.stop(); await client.close(); await server.close(); }
 });

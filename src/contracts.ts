@@ -25,7 +25,8 @@ export interface GenerationResult {
   evidence?: Record<string, unknown>;
 }
 export interface GenerationPort {
-  capabilities: { kind: CreationKind; generate: boolean; edit: boolean; maxReferences: number; provider: string };
+  capabilities: { kind: CreationKind; generate: boolean; edit: boolean; maxReferences: number; provider: string;
+    model?: string; parameterKeys?: readonly string[] };
   generate(input: GenerationInput, signal: AbortSignal): Promise<GenerationResult>;
 }
 export interface ImageGenerationRequest {

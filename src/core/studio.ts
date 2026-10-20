@@ -6,7 +6,7 @@ import type {
   MediaBytes, ResolvedReference, StudioOptions, JobStatus,
 } from '../contracts.ts';
 import { AIGC_PROTOCOL } from '../contracts.ts';
-import { ImageGenerationError } from './image-generation.ts';
+import { CreationProviderError } from './errors.ts';
 import { extension, validateMedia } from './media.ts';
 import { withReferenceRoles } from './prompt.ts';
 
@@ -120,7 +120,8 @@ export class AigcStudio {
     try {
       ctx.signal?.throwIfAborted();
       if (args.action === 'capabilities') return { text: JSON.stringify(this.capabilities()) };
-      if (args.action === 'list') return { text: JSON.stringify(this.list()) };
+      if (args.action === 'list') return { text: JSON.stringify(this.list().map(({ id, requestId, taskId, kind, status, provider, model, createdAt, updatedAt, artifacts }) =>
+        ({ id, requestId, taskId, kind, status, provider, model, createdAt, updatedAt, artifacts }))) };
       if (['status', 'read', 'wait', 'cancel', 'inputs'].includes(String(args.action))) {
         let job = this.jobs.get(String(args.id));
         if (!job) throw new Error('Creation job not found');
@@ -162,7 +163,7 @@ export class AigcStudio {
       const previous = [...this.jobs.values()].find(j => j.requestId === requestId);
       if (previous) {
         if (previous.signature !== signature) throw new Error('Request id reused with different arguments');
-        return this.outcome(previous, previous.status === 'succeeded');
+        return this.outcome(previous);
       }
       if (this.active.size >= (this.options.maxConcurrent ?? 1)) throw new Error('Creation provider is busy or draining; query the original job first');
       const provider = this.options.provider(kind);
@@ -170,6 +171,8 @@ export class AigcStudio {
       const refs = args.references ?? [];
       if (!Array.isArray(refs) || refs.length > provider.capabilities.maxReferences) throw new Error('Too many references for this provider');
       if (args.parameters !== undefined && (!args.parameters || typeof args.parameters !== 'object' || Array.isArray(args.parameters))) throw new Error('parameters must be an object');
+      if (provider.capabilities.parameterKeys && Object.keys(args.parameters ?? {}).some(key => !provider.capabilities.parameterKeys!.includes(key)))
+        throw new Error('Unsupported parameters for this provider; supported keys: ' + provider.capabilities.parameterKeys.join(', '));
       const resolved: ResolvedReference[] = refs.map((ref: unknown) => {
         if (!ref || typeof ref !== 'object') throw new Error('Reference needs handle and explicit role');
         const r = ref as ResolvedReference;
@@ -188,7 +191,7 @@ export class AigcStudio {
       const job: CreationJob = { schema: AIGC_PROTOCOL, id: randomUUID(), requestId, signature, kind,
         prompt: args.prompt, parameters: structuredClone(args.parameters ?? {}) as Record<string, unknown>,
         references: resolved.map(({ bytes, ...r }) => ({ ...r, bytes: bytes.length })),
-        status: 'accepted', createdAt: now, updatedAt: now, provider: provider.capabilities.provider,
+        status: 'accepted', createdAt: now, updatedAt: now, provider: provider.capabilities.provider, model: provider.capabilities.model,
         artifacts: [], goalCompleted: false,
         ...(typeof args.task_id === 'string' ? { taskId: args.task_id } : ctx.taskId ? { taskId: ctx.taskId } : {}) };
       resolved.forEach((r, i) => this.saveAsset(job.id + '-input-' + i, r));
@@ -227,14 +230,19 @@ export class AigcStudio {
               playbackVerified: false, singingVoiceVerified: false } });
         } catch (error) {
           if (this.host !== host || this.epoch !== epoch || terminal(job.status)) return;
-          job.status = signal.aborted ? 'cancelled' : 'unknown'; job.remoteOutcome = 'unknown';
+          const confirmed = error instanceof CreationProviderError && error.terminalStatus;
+          job.status = signal.aborted ? 'cancelled' : confirmed || 'unknown';
+          job.remoteOutcome = !signal.aborted && confirmed ? 'confirmed' : 'unknown';
           job.reason = signal.aborted ? 'Local request aborted; remote outcome may be unknown'
             : error instanceof Error ? error.message : 'Provider failed without terminal evidence';
-          if (error instanceof ImageGenerationError && error.providerRequestId) job.providerRequestId = error.providerRequestId;
+          if (error instanceof CreationProviderError) {
+            if (error.providerRequestId) job.providerRequestId = error.providerRequestId;
+            if (error.evidence) job.evidence = structuredClone(error.evidence);
+          }
         }
         if (this.host !== host || this.epoch !== epoch) return;
         this.save(job);
-        const out = this.outcome(job, job.status === 'succeeded');
+        const out = this.outcome(job);
         try {
           await host.pushEvent({ source: 'aigc', type: 'aigc.job', origin: 'external', ts: job.updatedAt,
             text: out.text, meta: { protocol: AIGC_PROTOCOL, id: job.id, terminal: terminal(job.status) }, blobs: out.blobs }, { trigger: 'flush' });

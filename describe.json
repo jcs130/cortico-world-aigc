@@ -132,12 +132,48 @@
         "read"
       ],
       "summary": "学习参考图分工、提示词组织和创作验收"
+    },
+    {
+      "name": "aigc_query",
+      "description": "Read configured creation capabilities, original jobs, prompts, references and artifacts without a tool barrier. read explicitly loads archived media. wait can be cancelled without cancelling generation. Job notices contain metadata only. Cannot generate, cancel, adopt, publish or play.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "capabilities",
+              "status",
+              "read",
+              "inputs",
+              "list",
+              "wait"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60000
+          }
+        }
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": "查询能力、任务、原始输入和成品素材"
     }
   ],
   "events": [
     {
       "type": "aigc.job",
-      "description": "Archived creation job terminal outcome and generated media; no playback, adoption or goal completion is implied.",
+      "description": "Archived creation job terminal metadata and artifact ids; read retrieves media explicitly. No playback, adoption or goal completion is implied.",
       "trigger": "flush"
     }
   ],
@@ -146,7 +182,7 @@
       "key": "worlds.aigc.env",
       "title": "AIGC 创作能力",
       "role": "envPrompt",
-      "content": "You can create images, videos and music using aigc_create. First read capabilities; only explicitly configured providers are available. Read aigc_help for creative prompting and reference roles.\n\nPersona owns identity, known people, memory and artistic choices. If appearance_lookup is provided by Persona, select confirmed identity references there and pass their handles/revisions explicitly. The AIGC World does not inspect memory, other World files, ports or game state.\n\nFor an enhanced game photo, ask the game World for an ordinary screenshot plus historical scene/camera evidence, optionally a voxel proxy. Pass the chosen scene as reference 1 and identity references after it. Preserve the requested landmarks, action and camera; choose the composition and style yourself. Ordinary photography remains a game capability without a model. Original creations need no game.\n\nAccepted is not completed. Use original job ids and status/read/wait or aigc.job events, then inspect the actual artifact before adoption. inputs retrieves raw prompts and original references. Preserve originals; distinguish observed facts from invented details. Creation does not publish or play anything. Use the relevant chat/performance World for that after choosing the finished result. Cancel waiting separately from cancelling a job; local cancellation does not prove remote work stopped.\n"
+      "content": "You can create images, videos and music using aigc_create. First read capabilities; only explicitly configured providers are available. Read aigc_help for creative prompting and reference roles.\n\nUse the read-only aigc_query for capabilities, status, list, inputs, read and cancellable wait. Completion notices contain artifact ids and metadata; read explicitly retrieves media. Creation and cancellation remain actions. Provider capabilities list supported parameter keys; do not assume an ignored parameter took effect.\n\nPersona owns identity, known people, memory and artistic choices. If appearance_lookup is provided by Persona, select confirmed identity references there and pass their handles/revisions explicitly. The AIGC World does not inspect memory, other World files, ports or game state.\n\nFor an enhanced game photo, ask the game World for an ordinary screenshot plus historical scene/camera evidence, optionally a voxel proxy. Pass the chosen scene as reference 1 and identity references after it. Preserve the requested landmarks, action and camera; choose the composition and style yourself. Ordinary photography remains a game capability without a model. Original creations need no game.\n\nAccepted is not completed. Use original job ids and status/read/wait or aigc.job events, then inspect the actual artifact before adoption. inputs retrieves raw prompts and original references. Preserve originals; distinguish observed facts from invented details. Creation does not publish or play anything. Use the relevant chat/performance World for that after choosing the finished result. Cancel waiting separately from cancelling a job; local cancellation does not prove remote work stopped.\n"
     }
   ]
 }

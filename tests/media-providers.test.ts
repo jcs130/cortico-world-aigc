@@ -6,7 +6,7 @@ const config: MediaProviderConfig = { provider: 'gateway', endpoint: 'https://fi
 const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from('ftypisom00000000')]);
 const wav = Buffer.alloc(48); wav.write('RIFF'); wav.write('WAVE', 8);
 const input = (kind: 'video' | 'music'): GenerationInput => ({ kind, prompt: 'Original cinematic scene', requestId: 'original',
-  parameters: { instrumental: true, durationSec: 5 }, references: [] });
+  parameters: kind === 'music' ? { instrumental: true } : { durationSec: 5 }, references: [] });
 it('submits Wan2.7 once, preserves native task id, disables prompt extension, and downloads without auth', async () => {
   const http = vi.fn().mockResolvedValueOnce(Response.json({ output: { task_id: 'wan-original' } }))
     .mockResolvedValueOnce(Response.json({ output: { task_status: 'SUCCEEDED', video_url: 'https://files.invalid/out.mp4' } }))
@@ -21,6 +21,18 @@ it('submits Wan2.7 once, preserves native task id, disables prompt extension, an
   expect(http.mock.calls[0][1].headers['X-DashScope-Async']).toBe('enable');
   expect(String(http.mock.calls[1][0])).toBe('https://fixture.invalid/api/v1/tasks/wan-original');
   expect(http.mock.calls[2][1].headers).toBeUndefined();
+});
+it('snapshots provider settings and retains explicit terminal receipts from the original task', async () => {
+  const settings = { ...config, provider: 'bailian-wan27' as const, model: 'wan2.7-t2v-original' };
+  const http = vi.fn().mockResolvedValueOnce(Response.json({ output: { task_id: 'original-task' } }))
+    .mockResolvedValueOnce(Response.json({ output: { task_status: 'FAILED' } }));
+  const port = createMediaPort('video', settings, { fetch: http, env: { FIXTURE_KEY: 'fixture' } })!;
+  settings.model = 'new-settings'; settings.endpoint = 'https://another.invalid';
+  await expect(port.generate(input('video'), new AbortController().signal)).rejects.toMatchObject({
+    providerRequestId: 'original-task', terminalStatus: 'failed', evidence: { providerState: 'FAILED' },
+  });
+  expect(JSON.parse(http.mock.calls[0][1].body).model).toBe('wan2.7-t2v-original');
+  expect(String(http.mock.calls[0][0])).toBe(config.endpoint); expect(http).toHaveBeenCalledTimes(2);
 });
 it('uses native FAL music queue without automatic lyric writing or a singer identity claim', async () => {
   const http = vi.fn().mockResolvedValueOnce(Response.json({ request_id: 'music-original',

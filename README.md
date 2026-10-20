@@ -1,6 +1,6 @@
 # AIGC 创作室
 
-独立的 Cortico World，统一制作图片、视频和歌曲。提供共享任务队列、素材引用、取消、原始输入归档与 SDK/MCP。绘画和生成核心无需 Minecraft、Cortico、演出服务或模型权重即可导入、构建和测试。
+独立的 Cortico World，统一制作图片、视频和歌曲。提供共享任务管理、素材引用、取消、原始输入归档与 SDK/MCP。绘画和生成核心无需 Minecraft、Cortico、演出服务或模型权重即可导入、构建和测试。
 
 ## 分工
 
@@ -16,6 +16,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 ## 工具
 
 - aigc_help：读取随包的 imagegen 创作指南。
+- aigc_query：只读查询能力、任务、原文、参考和作品，不设置执行屏障。
 - aigc_create：capabilities / generate / status / read / inputs / list / wait / cancel。
 - aigc.job：终态事件，默认 flush，不强行打断正在说话或操作的 Agent。
 
@@ -32,7 +33,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 }
 ~~~
 
-这些示例句柄是占位说明。generate 返回受理，不代表目标完成、播放或内容已采纳。用原 id 查询；inputs 查询原文与输入，read 读取成品。wait 的取消只停止等待；cancel 关闭本机请求，不保证远端停止计算和计费。unknown 不自动重投。停用后禁止旧实例写回或投递。
+这些示例句柄是占位说明。generate 返回受理，不代表目标完成、播放或内容已采纳。用 aigc_query 和原 id 查询；inputs 查询原文与输入，read 显式读取成品。终态事件、重复请求和 list 返回元数据。wait 的取消只停止等待；cancel 关闭本机请求，不保证远端停止计算和计费。unknown 不自动重投。停用后禁止旧实例写回或投递。
 
 ## 供应商
 
@@ -46,7 +47,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 
 原生文生视频与音乐端点的参考图／歌手参考上限为 0；不伪装成支持人物一致性或声音克隆。视频与歌曲下载只核对容器签名；内容、时长、歌词、人物一致性和听感仍需实际检查。接口实现通过离线夹具验收不代表这些云端模型已实际付费生成。
 
-配置和接入说明见 docs/PROVIDERS.md；拆分与旧数据迁移见 docs/MIGRATION.md。
+配置和接入说明见 docs/PROVIDERS.md；拆分与旧数据迁移见 docs/MIGRATION.md；职责与运行约束见 docs/ARCHITECTURE.md。
 
 ## 独立使用
 

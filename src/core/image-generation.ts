@@ -1,5 +1,11 @@
 import type { ImageProviderConfig, ImageGenerationPort, ImageGenerationRequest, ImageGenerationResult, ArtImage } from '../contracts.ts';
 import { createComfyFlux3Port } from './comfy-flux3.ts';
+import { ImageGenerationError } from './errors.ts';
+import { imageMime, validateArtImage } from './media.ts';
+import { boundedBody } from './http.ts';
+export { imageMime, validateArtImage } from './media.ts';
+export { boundedBody } from './http.ts';
+export { ImageGenerationError } from './errors.ts';
 
 export const IMAGE_PROVIDER_DEFAULTS: ImageProviderConfig = {
   provider: 'none', endpoint: '', model: '', apiKeyEnv: '',
@@ -8,45 +14,10 @@ export const IMAGE_PROVIDER_DEFAULTS: ImageProviderConfig = {
 
 };
 const MAX_IMAGE = 24 * 1024 * 1024;
-const MAX_INPUT = 10 * 1024 * 1024;
-export class ImageGenerationError extends Error {
-  constructor(message: string, readonly providerRequestId?: string) { super(message); this.name = 'ImageGenerationError'; }
-}
 function safeRequestId(value: unknown): string | undefined {
   return typeof value === 'string' && /^[\w-]{1,160}$/.test(value) ? value : undefined;
 }
 
-/** Reject mislabeled error pages; do not save HTML/JSON as an image. */
-export function imageMime(bytes: Uint8Array): string {
-  const b = Buffer.from(bytes);
-  if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
-  if (b.length >= 3 && b[0] === 255 && b[1] === 216 && b[2] === 255) return 'image/jpeg';
-  if (b.length >= 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
-  throw new Error('Image response is not PNG, JPEG or WebP');
-}
-export function validateArtImage(image: ArtImage, max = MAX_INPUT): void {
-  if (!image.bytes.length || image.bytes.length > max) throw new Error('Image exceeds the configured input/output byte limit');
-  if (imageMime(image.bytes) !== image.mime) throw new Error('Image MIME does not match its bytes');
-}
-export async function boundedBody(response: Response, max: number, signal: AbortSignal): Promise<Uint8Array> {
-  if (Number(response.headers.get('content-length')) > max) { await response.body?.cancel(); throw new Error('Image response too large'); }
-  if (!response.body) throw new Error('Empty image response');
-  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
-  let size = 0;
-  const abort = () => { void reader.cancel().catch(() => {}); };
-  signal.addEventListener('abort', abort, { once: true });
-  try {
-    signal.throwIfAborted();
-    for (;;) {
-      const next = await reader.read(); signal.throwIfAborted();
-      if (next.done) break;
-      size += next.value.length;
-      if (size > max) throw new Error('Image response too large');
-      chunks.push(next.value);
-    }
-    return Buffer.concat(chunks);
-  } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); }
-}
 function apiUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search)
@@ -101,14 +72,15 @@ export function createImageGenerationPort(config: Partial<ImageProviderConfig> |
       catch { signal.throwIfAborted(); throw new Error('Image provider transport failed; remote acceptance is unknown. Do not automatically resubmit.'); }
       const headerRequestId = safeRequestId(response.headers.get('x-request-id'));
       if (headerRequestId) request.onAccepted?.(headerRequestId);
-      if (!response.ok) { await response.body?.cancel(); throw new ImageGenerationError(`Image provider HTTP ${response.status}; no automatic retry`, headerRequestId); }
+      if (!response.ok) { await response.body?.cancel(); throw new ImageGenerationError(`Image provider HTTP ${response.status}; no automatic retry`, headerRequestId,
+        [400,401,403,404,405,413,415,422,429].includes(response.status) ? 'failed' : undefined, { httpStatus: response.status }); }
       let data: any;
       try { data = JSON.parse(Buffer.from(await boundedBody(response, 40 * 1024 * 1024, signal)).toString('utf8')); }
       catch { signal.throwIfAborted(); throw new ImageGenerationError('Invalid image provider JSON response', headerRequestId); }
       const requestId = safeRequestId(data.request_id) ?? headerRequestId;
       if (requestId && requestId !== headerRequestId) request.onAccepted?.(requestId);
       const fail = (message: string): never => { throw new ImageGenerationError(message, requestId); };
-      if (data.error || data.code) fail('Image provider reported failure; inspect provider request logs');
+      if (data.error || data.code) throw new ImageGenerationError('Image provider reported failure; inspect provider request logs', requestId, 'failed', { providerState: 'error' });
       const outputs = cfg.provider === 'bailian'
         ? data.output?.choices?.flatMap((choice: any) => choice.message?.content?.filter((part: any) => typeof part.image === 'string').map((part: any) => ({ url: part.image })) ?? [])
         : data.data;

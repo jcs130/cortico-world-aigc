@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-aigc",
-  "version": "0.1.0-dev.20261020.1",
+  "version": "0.1.0-dev.20261020.2",
   "description": "Independent image, video and music creation World with shared assets, explicit providers and durable jobs",
   "type": "module",
   "license": "MIT",

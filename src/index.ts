@@ -6,7 +6,7 @@ import { describeTools, type WorldDefinition } from 'cortico/world.ts';
 import type { AigcWorldConfig } from './contracts.ts';
 import { AigcStudio } from './core/studio.ts';
 import { aigcDefaults, createCreationPort } from './core/providers.ts';
-import { AIGC_TOOL_DECLS, AIGC_EVENT_DECLS } from './tools.ts';
+import { AIGC_TOOL_DECLS, AIGC_EVENT_DECLS, queryOnly } from './tools.ts';
 import { creationConfigGroup } from './config.ts';
 
 const guidePath = fileURLToPath(new URL('../skills/imagegen/SKILL.md', import.meta.url));
@@ -25,7 +25,9 @@ export class AigcWorld implements World {
   tools(): ToolDef[] {
     return AIGC_TOOL_DECLS.map(decl => ({ ...decl,
       handler: async (args, ctx) => decl.name === 'aigc_help'
-        ? { text: readFileSync(guidePath, 'utf8') } : this.studio.execute(args, ctx) }));
+        ? { text: readFileSync(guidePath, 'utf8') }
+        : decl.name === 'aigc_query' && !queryOnly(args) ? { text: 'Query tool accepts read actions only', failed: true }
+        : this.studio.execute(args, ctx) }));
   }
   async start(host: WorldHost): Promise<void> { this.studio.start(host); }
   async stop(): Promise<void> { this.studio.stop(); }
@@ -41,6 +43,7 @@ const definition: WorldDefinition<AigcWorldConfig> = {
   describe: { tools: describeTools(AIGC_TOOL_DECLS, {
     aigc_create: '制作图片、视频或歌曲，并核对异步任务及原始素材',
     aigc_help: '学习参考图分工、提示词组织和创作验收',
+    aigc_query: '查询能力、任务、原始输入和成品素材',
   }), events: AIGC_EVENT_DECLS },
   create: ctx => new AigcWorld(() => ctx.cfg, join(ctx.dataDir, 'aigc-jobs'), name => ctx.secret(name)),
 };

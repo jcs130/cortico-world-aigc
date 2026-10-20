@@ -2,7 +2,9 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AigcWorldConfig, CreationKind, GenerationInput, GenerationPort, GenerationResult, MediaProviderConfig } from '../contracts.ts';
-import { createImageGenerationPort, IMAGE_PROVIDER_DEFAULTS, boundedBody, ImageGenerationError } from './image-generation.ts';
+import { createImageGenerationPort, IMAGE_PROVIDER_DEFAULTS } from './image-generation.ts';
+import { boundedBody } from './http.ts';
+import { CreationProviderError } from './errors.ts';
 
 const MEDIA_DEFAULTS: MediaProviderConfig = {
   provider: 'none', endpoint: '', model: '', apiKeyEnv: '', resultHosts: [], timeoutMs: 1_800_000, pollMs: 5000, maxReferences: 0,
@@ -23,6 +25,7 @@ function apiUrl(value: string): URL {
 }
 export function createMediaPort(kind: 'video' | 'music', config: MediaProviderConfig,
   options: { fetch?: typeof fetch; env?: Record<string, string | undefined> } = {}): GenerationPort | null {
+  config = structuredClone(config);
   if (config.provider === 'none') return null;
   const endpoint = apiUrl(config.endpoint);
   if (!config.model || !Number.isInteger(config.pollMs) || config.pollMs < 50 || config.pollMs > 60000
@@ -35,6 +38,9 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
   if (native && (config.maxReferences !== 0 || endpoint.protocol !== 'https:'))
     throw new Error('This native text-only media adapter requires HTTPS and maxReferences=0');
   const http = options.fetch ?? globalThis.fetch;
+  const parameterKeys = config.provider === 'bailian-wan27' ? ['durationSec','resolution','ratio']
+    : config.provider === 'fal-music' ? ['lyrics','instrumental']
+    : config.provider === 'yue-gateway' ? ['title','style','lyrics','instrumental','durationSec'] : undefined;
   const headers = () => {
     const env = options.env ?? process.env, key = config.apiKeyEnv ? env[config.apiKeyEnv] : undefined;
     if (config.apiKeyEnv && (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.apiKeyEnv) || !key || /[\r\n]/.test(key))) throw new Error('Configured media key is missing or invalid');
@@ -46,7 +52,12 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
     let response: Response;
     try { response = await http(url, { ...init, signal, headers: { ...headers(), ...init.headers }, redirect: 'error' }); }
     catch { signal.throwIfAborted(); throw new Error('Media transport outcome unknown; reconcile original request before resubmitting'); }
-    if (!response.ok) { await response.body?.cancel(); throw new Error('Media provider HTTP ' + response.status + '; no automatic retry'); }
+    if (!response.ok) {
+      await response.body?.cancel();
+      const rejected = init.method === 'POST' && [400,401,403,404,405,413,415,422,429].includes(response.status);
+      throw new CreationProviderError('Media provider HTTP ' + response.status + '; no automatic retry', undefined,
+        rejected ? 'failed' : undefined, { httpStatus: response.status, phase: init.method === 'POST' ? 'submission' : 'query' });
+    }
     return JSON.parse(Buffer.from(await boundedBody(response, 4 * 1024 * 1024, signal)).toString('utf8'));
   };
   const download = async (raw: unknown, mime: string, signal: AbortSignal) => {
@@ -60,11 +71,13 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
     return { bytes: await boundedBody(response, 256 * 1024 * 1024, signal), mime };
   };
   return {
-    capabilities: { kind, generate: true, edit: !native && config.maxReferences > 0, maxReferences: config.maxReferences, provider: config.provider },
+    capabilities: { kind, generate: true, edit: !native && config.maxReferences > 0, maxReferences: config.maxReferences, provider: config.provider,
+      model: config.model, ...(parameterKeys ? { parameterKeys } : {}) },
     async generate(input, parent): Promise<GenerationResult> {
       const signal = AbortSignal.any([parent, AbortSignal.timeout(config.timeoutMs)]);
       signal.throwIfAborted();
       if (input.kind !== kind || input.references.length > config.maxReferences) throw new Error('Unsupported media kind/references');
+      if (parameterKeys && Object.keys(input.parameters).some(key => !parameterKeys.includes(key))) throw new Error('Unsupported provider parameter');
       const p = input.parameters;
       if (config.provider === 'bailian-wan27') {
         if (!/^wan2\.7-t2v(?:-|$)/.test(config.model)) throw new Error('This adapter implements only the documented Wan2.7 text-to-video protocol');
@@ -82,7 +95,8 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
           if (state === 'SUCCEEDED') return { artifacts: [await download(result.output.video_url, 'video/mp4', signal)],
             model: config.model, providerRequestId: id, usage: result.usage,
             evidence: { durationControl: 'provider-parameter', frameContentVerified: false } };
-          if (!['PENDING', 'RUNNING'].includes(state)) throw new ImageGenerationError('Wan original task ended with state ' + String(state), id);
+          if (!['PENDING', 'RUNNING'].includes(state)) throw new CreationProviderError('Wan original task ended with state ' + String(state), id,
+            state === 'FAILED' ? 'failed' : state === 'CANCELED' ? 'cancelled' : undefined, { providerState: state });
           await delay(config.pollMs, undefined, { signal });
         }
       }
@@ -109,7 +123,8 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
             return { artifacts: [await download(result.audio?.url, 'audio/wav', signal)], model: config.model,
               providerRequestId: id, evidence: { lyricsVerified: false, singerIdentityVerified: false, durationControl: 'provider-generated' } };
           }
-          if (!['IN_QUEUE', 'IN_PROGRESS'].includes(state)) throw new ImageGenerationError('FAL original task ended with state ' + String(state), id);
+          if (!['IN_QUEUE', 'IN_PROGRESS'].includes(state)) throw new CreationProviderError('FAL original task ended with state ' + String(state), id,
+            state === 'FAILED' ? 'failed' : state === 'CANCELLED' ? 'cancelled' : undefined, { providerState: state });
           await delay(config.pollMs, undefined, { signal });
         }
       }
@@ -144,7 +159,8 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
             upstreamState: state, contentApproved: false, singingVoiceVerified: false } };
         }
         if (!['accepted', 'queued', 'running', 'generating', 'validating', 'reviewing'].includes(state))
-          throw new ImageGenerationError('Gateway original task ended with state ' + String(state), id);
+          throw new CreationProviderError('Gateway original task ended with state ' + String(state), id,
+            state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : undefined, { providerState: state });
         await delay(config.pollMs, undefined, { signal });
         result = await json(new URL('jobs/' + id, base), signal);
       }
@@ -157,8 +173,9 @@ export function createCreationPort(kind: CreationKind, cfg: AigcWorldConfig,
   const port = createImageGenerationPort(cfg.image, options);
   if (!port) return null;
   return {
-    capabilities: { kind, provider: cfg.image.provider, ...port.capabilities },
+    capabilities: { kind, provider: cfg.image.provider, model: cfg.image.model, parameterKeys: ['size'], ...port.capabilities },
     async generate(input, signal) {
+      if (Object.keys(input.parameters).some(key => key !== 'size')) throw new Error('Unsupported image parameter; supported: size');
       const result = await port.generate({ prompt: input.prompt,
         images: input.references.map(({ bytes, mime }) => ({ bytes, mime })),
         ...(typeof input.parameters.size === 'string' ? { size: input.parameters.size } : {}),
