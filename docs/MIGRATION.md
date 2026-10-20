@@ -17,3 +17,7 @@ migrateLegacyPhotos(sourceDirectory,destinationDirectory,apply=false) 默认预�
 新框架采用 World API 6。现役私有 API 5 包的加载属于另一项部署步骤，不能靠改 manifest 版本冒充兼容。开发测试不会重启可米、客户端或模型服务，不改现役目标、记忆与账本。
 
 测试顺序：独立生成核心 → SDK/MCP → 官方 Cortico 挂载与附件 → MC 截图消费 → 演出读取成品。源码、构建、打包、npm 发布、部署与实际生成分别记录。
+
+## 2026-10-20：生成与采集归属
+
+`art-brief` 与 `prepare-art` 从演出包迁入本包；YuE 网关、歌词/音色工作进程及原任务测试迁入 `providers/yue`。EdenLive 推理工作进程迁入 `providers/edenlive`；Minecraft 组合入口在 `examples/minecraft-edenlive`。体素记录与相机配准由公开 `agent-mc-world/capture` 提供。旧归档、服务和模型目录原地保留，均不自动启动或复制。演出工具不再生成歌曲，先调用 AIGC，显式读取 WAV 句柄，再采用和播放。

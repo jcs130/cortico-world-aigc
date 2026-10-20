@@ -7,3 +7,5 @@ export * from './image-generation.ts';
 export * from './comfy-flux3.ts';
 export * from './migration.ts';
 export { CreationProviderError } from './errors.ts';
+
+export * from './art-brief.ts';

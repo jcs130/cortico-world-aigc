@@ -10,3 +10,15 @@ invariant-preservation and review principles from OpenAI's imagegen skill,
 Copyright OpenAI, under Apache License 2.0. Full source license is retained
 in licenses/imagegen-Apache-2.0.txt. The guide is adapted, not an assertion
 that Cortico owns the Codex image_gen tool or its authentication.
+
+2026-10-20 boundary migration (not a relicensing):
+- src/core/art-brief.ts, scripts/prepare-art.ts, providers/yue and their tests
+  originate in cortico-world-vtuber at 3c2c17a5 (AGPL-3.0-or-later).
+  Retained license: licenses/vtuber-AGPL-3.0-or-later.txt.
+- examples/minecraft-edenlive and provider integration documentation originate
+  in cortico-world-avatar-stage at e4339b86 (AGPL-3.0-only).
+  Retained license: licenses/avatar-stage-AGPL-3.0-only.txt.
+- providers/edenlive/realtime_worker.py adapts LightX2V, Apache-2.0, retained
+  in providers/edenlive/LICENSE.LightX2V.txt. Model weights are not distributed.
+Existing MIT files remain MIT. The combined npm artifact declares MIT AND
+AGPL-3.0-only; do not redistribute the migrated components as MIT-only.

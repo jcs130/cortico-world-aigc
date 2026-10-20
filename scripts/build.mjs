@@ -13,6 +13,6 @@ run(['--import', 'tsx', 'scripts/describe.mjs']);
 const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);
 const record = path => ({ path: path.replaceAll('\\', '/'), sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
 writeFileSync('dist/build.json', JSON.stringify({ schema: 'agent-aigc-build/v1',
-  source: [...walk('src'), ...walk('skills'), 'package.json'].map(record),
+  source: [...walk('src'), ...walk('skills'), ...walk('providers').filter(p=>!p.includes('__pycache__')&&!p.endsWith('.pyc')), ...walk('examples'), 'package.json'].map(record),
   files: walk('dist').filter(p => p.replaceAll('\\', '/') !== 'dist/build.json').map(record),
 }, null, 2) + '\n');

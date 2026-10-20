@@ -5,3 +5,6 @@ dist-neutral/
 data/
 .env
 coverage/
+
+__pycache__/
+*.pyc

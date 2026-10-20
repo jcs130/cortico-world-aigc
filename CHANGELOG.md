@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-dev.20261020.3
+
+- Own artwork planning, optional YuE workers and EdenLive video inference; keep game capture in the public Minecraft core.
+- Preserve migrated source licenses and explicitly configured application examples; mounting starts no model process.
+
 ## 0.1.0-dev.20261020.2
 
 - Add read-only aigc_query; retain existing query actions for source compatibility.
