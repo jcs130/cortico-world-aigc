@@ -13,16 +13,27 @@ import { validateArtImage } from "./media.ts";
 import { CreationProviderError } from "./errors.ts";
 
 /** Trusted operator-authored graph, never a graph or file path supplied by a model. */
-export interface ComfyVideoWorkflow {
+export type ComfyVideoGraph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+export interface ComfyVideoWorkflowV1 {
   schema: "agent-aigc-comfy-video/v1";
-  graph: Record<
-    string,
-    { class_type: string; inputs: Record<string, unknown> }
-  >;
+  graph: ComfyVideoGraph;
   outputNode: string;
   fps: number;
   requiredReferences: number;
   durationSec: { default: number; min: number; max: number };
+}
+/** Operator-owned variants. A request selects only a declared profile and reference count. */
+export interface ComfyVideoWorkflowV2 {
+  schema: "agent-aigc-comfy-video/v2";
+  fps: number;
+  frameAlignment: { multiple: number; offset: number };
+  durationSec: { default: number; min: number; max: number };
+  defaultProfile: string;
+  variants: Array<{ profile: string; requiredReferences: number; graph: ComfyVideoGraph; outputNode: string }>;
+}
+export type ComfyVideoWorkflow = ComfyVideoWorkflowV1 | ComfyVideoWorkflowV2;
+export function alignComfyVideoFrames(duration: number, fps: number, grid = { multiple: 8, offset: 1 }): number {
+  return Math.max(0, Math.ceil((duration * fps - grid.offset) / grid.multiple)) * grid.multiple + grid.offset;
 }
 export function loadComfyVideoWorkflow(
   file: string | undefined,
@@ -33,17 +44,10 @@ export function loadComfyVideoWorkflow(
     throw Error("Video workflow is too large");
   const cfg = JSON.parse(bytes.toString("utf8")) as ComfyVideoWorkflow;
   if (
-    cfg.schema !== "agent-aigc-comfy-video/v1" ||
-    !cfg.graph ||
-    typeof cfg.graph !== "object" ||
-    Array.isArray(cfg.graph) ||
-    !Object.hasOwn(cfg.graph, cfg.outputNode) ||
+    !["agent-aigc-comfy-video/v1", "agent-aigc-comfy-video/v2"].includes(cfg.schema) ||
     !Number.isInteger(cfg.fps) ||
     cfg.fps < 1 ||
     cfg.fps > 60 ||
-    !Number.isInteger(cfg.requiredReferences) ||
-    cfg.requiredReferences < 0 ||
-    cfg.requiredReferences > 14 ||
     !cfg.durationSec ||
     ![cfg.durationSec.min, cfg.durationSec.default, cfg.durationSec.max].every(
       Number.isFinite,
@@ -53,7 +57,29 @@ export function loadComfyVideoWorkflow(
     cfg.durationSec.default > cfg.durationSec.max
   )
     throw Error("Invalid explicit video workflow contract");
-  for (const [key, node] of Object.entries(cfg.graph))
+  if (cfg.schema === "agent-aigc-comfy-video/v2" && (
+    !cfg.frameAlignment || !Number.isInteger(cfg.frameAlignment.multiple) ||
+    cfg.frameAlignment.multiple < 1 || cfg.frameAlignment.multiple > 1024 ||
+    !Number.isInteger(cfg.frameAlignment.offset) || cfg.frameAlignment.offset < 0 ||
+    cfg.frameAlignment.offset >= cfg.frameAlignment.multiple ||
+    typeof cfg.defaultProfile !== 'string' || !/^[\w-]{1,64}$/.test(cfg.defaultProfile) || !Array.isArray(cfg.variants) ||
+    cfg.variants.length < 1 || cfg.variants.length > 128 ||
+    !cfg.variants.some(v => v?.profile === cfg.defaultProfile)
+  )) throw Error("Invalid explicit video workflow variants or frame alignment");
+  const variants = cfg.schema === "agent-aigc-comfy-video/v1" ? [cfg] : cfg.variants;
+  const seen = new Set<string>();
+  for (const variant of variants) {
+    if (!variant || !variant.graph || typeof variant.graph !== "object" || Array.isArray(variant.graph) ||
+      !Object.hasOwn(variant.graph, variant.outputNode) || !Number.isInteger(variant.requiredReferences) ||
+      variant.requiredReferences < 0 || variant.requiredReferences > 14)
+      throw Error("Invalid explicit video workflow contract");
+    if (cfg.schema === "agent-aigc-comfy-video/v2") {
+      const profile = (variant as ComfyVideoWorkflowV2['variants'][number]).profile;
+      const key = profile + ":" + variant.requiredReferences;
+      if (typeof profile !== 'string' || !/^[\w-]{1,64}$/.test(profile) || seen.has(key)) throw Error("Invalid or duplicate video workflow variant");
+      seen.add(key);
+    }
+    for (const [key, node] of Object.entries(variant.graph))
     if (
       !/^[\w-]{1,160}$/.test(key) ||
       !node ||
@@ -64,10 +90,11 @@ export function loadComfyVideoWorkflow(
       Array.isArray(node.inputs)
     )
       throw Error("Invalid video workflow node");
+  }
   return cfg;
 }
 export function bindComfyVideoGraph(
-  workflow: ComfyVideoWorkflow,
+  workflow: { graph: ComfyVideoGraph },
   values: Record<string, unknown>,
 ) {
   const bind = (value: unknown): unknown => {
@@ -99,6 +126,10 @@ export function createComfyVideoPort(
   const effectiveWorkflowSha256 = createHash("sha256")
     .update(JSON.stringify(workflow))
     .digest("hex");
+  const variants = workflow.schema === "agent-aigc-comfy-video/v1" ? [workflow] : workflow.variants;
+  const referenceCounts = [...new Set(variants.map(v => v.requiredReferences))].sort((a, b) => a - b);
+  const maxReferences = Math.max(...referenceCounts);
+  const parameterKeys = ["durationSec", "seed", ...(workflow.schema === "agent-aigc-comfy-video/v2" ? ["profile"] : [])];
   if (
     endpoint.username ||
     endpoint.password ||
@@ -121,7 +152,7 @@ export function createComfyVideoPort(
     !Number.isInteger(config.pollMs) ||
     config.pollMs < 50 ||
     config.pollMs > 60000 ||
-    workflow.requiredReferences > config.maxReferences
+    !Number.isInteger(config.maxReferences) || config.maxReferences < maxReferences || config.maxReferences > 14
   )
     throw Error("Invalid video provider configuration");
   const base = endpoint.href.replace(/\/$/, "") + "/",
@@ -135,13 +166,17 @@ export function createComfyVideoPort(
         input.parameters.durationSec ?? workflow.durationSec.default,
       ),
       seed = input.parameters.seed ?? 7;
+    const profile = workflow.schema === "agent-aigc-comfy-video/v2"
+      ? input.parameters.profile ?? workflow.defaultProfile : undefined;
+    const variant = variants.find(v => v.requiredReferences === input.references.length &&
+      (workflow.schema === "agent-aigc-comfy-video/v1" || (v as ComfyVideoWorkflowV2['variants'][number]).profile === profile));
     if (
       input.kind !== "video" ||
       !input.prompt.trim() ||
       input.prompt.length > 16000 ||
-      input.references.length !== workflow.requiredReferences ||
+      !variant ||
       Object.keys(input.parameters).some(
-        (k) => !["durationSec", "seed"].includes(k),
+        (k) => !parameterKeys.includes(k),
       ) ||
       !Number.isFinite(duration) ||
       duration < workflow.durationSec.min ||
@@ -154,18 +189,20 @@ export function createComfyVideoPort(
         "Video workflow requires its declared image references, durationSec range and integer seed",
       );
     input.references.forEach((image) => validateArtImage(image));
+    const frameAlignment = workflow.schema === "agent-aigc-comfy-video/v1"
+      ? { multiple: 8, offset: 1 } : workflow.frameAlignment;
     const values: Record<string, unknown> = {
       prompt: input.prompt,
       seed,
       durationSec: duration,
       fps: workflow.fps,
-      frames: Math.ceil((duration * workflow.fps - 1) / 8) * 8 + 1,
+      frames: alignComfyVideoFrames(duration, workflow.fps, frameAlignment),
       outputPrefix: "agent_aigc_video/" + randomUUID(),
     };
     input.references.forEach(
       (_, i) => (values["image" + i] = "preflight-placeholder.png"),
     );
-    bindComfyVideoGraph(workflow, values); // Unknown placeholders fail before uploads/submission.
+    bindComfyVideoGraph(variant!, values); // Unknown placeholders fail before uploads/submission.
     const key = config.apiKeyEnv
       ? (options.env ?? process.env)[config.apiKeyEnv]
       : undefined;
@@ -292,7 +329,7 @@ export function createComfyVideoPort(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: bindComfyVideoGraph(workflow, values),
+          prompt: bindComfyVideoGraph(variant!, values),
           client_id: input.requestId,
         }),
       });
@@ -320,7 +357,7 @@ export function createComfyVideoPort(
           history?.status?.completed === true &&
           history.status.status_str === "success"
         ) {
-          const output = history.outputs?.[workflow.outputNode];
+          const output = history.outputs?.[variant!.outputNode];
           const files = output?.images ?? output?.videos;
           if (!Array.isArray(files) || files.length !== 1)
             throw new CreationProviderError(
@@ -363,6 +400,10 @@ export function createComfyVideoPort(
               fps: workflow.fps,
               requestedDurationSec: duration,
               requestedFrames: values.frames,
+              frameAlignment,
+              effectiveDurationSec: Number(values.frames) / workflow.fps,
+              ...(profile ? { profile } : {}),
+              referenceCount: input.references.length,
               seed,
               decoded: false,
               qualityVerified: false,
@@ -384,8 +425,8 @@ export function createComfyVideoPort(
     capabilities: {
       kind: "video",
       generate: true,
-      edit: workflow.requiredReferences > 0,
-      maxReferences: workflow.requiredReferences,
+      edit: maxReferences > 0,
+      maxReferences,
       instanceId: createHash("sha256")
         .update(
           JSON.stringify([
@@ -396,10 +437,14 @@ export function createComfyVideoPort(
         )
         .digest("hex"),
       reconcile: true,
-      requiredReferences: workflow.requiredReferences,
+      ...(referenceCounts.length === 1 ? { requiredReferences: referenceCounts[0] } : {}),
+      referenceCounts,
+      ...(workflow.schema === "agent-aigc-comfy-video/v2" ? {
+        profiles: [...new Set(workflow.variants.map(v => v.profile))], defaultProfile: workflow.defaultProfile,
+      } : {}),
       provider: config.provider,
       model: config.model,
-      parameterKeys: ["durationSec", "seed"],
+      parameterKeys,
     },
     generate: run,
     reconcile: (id, input, signal) => run(input, signal, id),

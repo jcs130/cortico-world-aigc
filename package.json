@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-aigc",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Independent image, video and music creation World with shared assets, explicit providers and durable jobs",
   "type": "module",
   "license": "(MIT AND AGPL-3.0-only)",
@@ -85,7 +85,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "vitest run --maxWorkers=2 --minWorkers=1",
+    "test": "node node_modules/vitest/vitest.mjs run --pool=forks --maxWorkers=2 --minWorkers=1",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prepack": "node scripts/verify-package.mjs"
   },

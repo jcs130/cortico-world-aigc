@@ -8,7 +8,25 @@ import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/type
 import { AigcStudio } from '../src/core/studio.ts';
 import { migrateLegacyPhotos, planLegacyPhotographyConfig } from '../src/core/migration.ts';
 import { createAigcMcpServer, deliverAigcMcpEvent } from '../src/mcp/server.ts';
+import { buildMiniMaxH3Workflow } from '../src/core/comfy-minimax-h3.ts';
+import { createComfyVideoPort } from '../src/core/comfy-workflow.ts';
+import { aigcDefaults } from '../src/core/providers.ts';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6NQAAAABJRU5ErkJggg==', 'base64');
+it('transports H3 profiles, reference counts and default selection identically over SDK/MCP without network', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'aigc-h3-mcp-'));
+  const file = join(directory, 'workflow.json');
+  writeFileSync(file, JSON.stringify(buildMiniMaxH3Workflow({ fl2va:'fl', ref2va:'ref', textEncoder:'clip', videoVae:'vae', audioVae:'audio', fl2vaTurboLora:'fl8', ref2vaTurboLora:'ref4' })));
+  const port = createComfyVideoPort({ ...aigcDefaults().video, provider:'comfyui-workflow', endpoint:'http://127.0.0.1:8197', model:'h3', workflowFile:file, maxReferences:3 }, { fetch: async () => { throw Error('No network permitted'); } });
+  const studio = new AigcStudio({ provider: kind => kind === 'video' ? port : null });
+  studio.start({ blob:()=>null, pushEvent:async()=>{}, log:{warn:()=>{}} });
+  const server = createAigcMcpServer(studio,'guide'), client = new Client({name:'offline-h3',version:'1'});
+  const [a,b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
+  try {
+    const result = await client.callTool({ name:'aigc_query', arguments:{action:'capabilities'} });
+    expect((result.structuredContent as any).result).toEqual(studio.capabilities());
+    expect((result.structuredContent as any).result.kinds.video).toMatchObject({profiles:['turbo','quality'],referenceCounts:[0,1,2,3],defaultProfile:'turbo'});
+  } finally {studio.stop();await client.close();await server.close();rmSync(directory,{recursive:true,force:true});}
+});
 it('migrates original legacy records without source writes, overwrites, missing-output success or key-value copies', () => {
   const source = mkdtempSync(join(tmpdir(), 'aigc-legacy-')), dest = mkdtempSync(join(tmpdir(), 'aigc-dest-'));
   try {

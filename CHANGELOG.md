@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-rc.2 (unpublished)
+
+- Add a public MiniMax H3 workflow recipe with explicit model files, native audio, 0–9 reference images and paired LightX2V Turbo LoRAs; keep full-step quality comparison optional.
+- Add versioned ComfyUI v2 workflow profiles, reference-count selection and model-specific temporal grids, preserving the v1 8n+1 contract. H3 uses 17n+5 with aligned duration evidence.
+- Provide an optional loopback HTTP gateway over the same durable SDK for hot integration by existing hosts. Preserve original inputs, provider ids, deduplication, local cancellation and unknown outcomes across restarts.
+- Verify SDK/MCP capability parity and run Cortico integration tests in real Node fork processes. No models, identity assets, credentials or deployment endpoints are enabled by default.
+- Offline tests do not certify local H3 rendering, concurrent GPU capacity or picture quality. Model-specific Windows loading failures and mitigation are tracked separately.
+
 ## 0.1.0-rc.1
 
 - Prepare the first public beta for Cortico 0.2.4 / World API 6, with offline self-description and independent SDK/MCP exports.

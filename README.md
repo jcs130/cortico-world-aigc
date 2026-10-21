@@ -59,6 +59,10 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 
 配置和接入说明见 docs/PROVIDERS.md；拆分与旧数据迁移见 docs/MIGRATION.md；职责与运行约束见 docs/ARCHITECTURE.md。
 
+本地视频新增 [MiniMax H3 配方](docs/MINIMAX-H3.md)：支持文生视频、多参考图与原生音频，
+LightX2V Turbo 加速档和完整步数对照档，使用 H3 自己的帧数对齐。
+可通过可选回环网关接入已有宿主；权重和服务需明确准备，不随扩展安装启动。
+
 ## 独立使用
 
 ~~~ts

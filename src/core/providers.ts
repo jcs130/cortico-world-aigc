@@ -181,9 +181,32 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
             artifacts = [{ bytes: readFileSync(file), mime: 'audio/wav' }];
             retainedCandidate = true;
           } else throw new Error('Completed gateway job has no retrievable artifact');
+          // Preserve bounded native video evidence through an extra gateway hop. Never
+          // promote arbitrary provider text, credentials or completion claims into facts.
+          const upstreamVideoEvidence: Record<string, unknown> = {};
+          const raw = result.evidence;
+          if (config.provider === 'gateway' && raw &&
+            ['agent-aigc-comfy-video/v1','agent-aigc-comfy-video/v2'].includes(raw.workflowSchema)) {
+            upstreamVideoEvidence.workflowSchema = raw.workflowSchema;
+            for (const key of ['fps','requestedDurationSec','requestedFrames','effectiveDurationSec','referenceCount','seed'])
+              if (typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0)
+                upstreamVideoEvidence[key] = raw[key];
+            if (typeof raw.effectiveWorkflowSha256 === 'string' && /^[a-f0-9]{64}$/.test(raw.effectiveWorkflowSha256))
+              upstreamVideoEvidence.effectiveWorkflowSha256 = raw.effectiveWorkflowSha256;
+            if (typeof raw.profile === 'string' && /^[\w-]{1,64}$/.test(raw.profile)) upstreamVideoEvidence.profile = raw.profile;
+            for (const key of ['decoded','qualityVerified']) if (typeof raw[key] === 'boolean') upstreamVideoEvidence[key] = raw[key];
+            if (raw.frameAlignment && Number.isInteger(raw.frameAlignment.multiple) && raw.frameAlignment.multiple > 0 &&
+              raw.frameAlignment.multiple <= 1024 && Number.isInteger(raw.frameAlignment.offset) &&
+              raw.frameAlignment.offset >= 0 && raw.frameAlignment.offset < raw.frameAlignment.multiple)
+              upstreamVideoEvidence.frameAlignment = {multiple:raw.frameAlignment.multiple,offset:raw.frameAlignment.offset};
+          }
           return { artifacts, model: config.model, providerRequestId: id, evidence: {
             upstreamState: state, retainedCandidate, contentApproved: false, lyricsVerified: false,
-            adoptionRequired: true, singingVoiceVerified: false, ...diagnostics() } };
+            adoptionRequired: true, singingVoiceVerified: false, ...diagnostics(),
+            ...(Object.keys(upstreamVideoEvidence).length ? { upstreamVideoEvidence } : {}),
+            ...(config.provider === 'gateway' && typeof result.providerRequestId === 'string' && /^[\w-]{1,160}$/.test(result.providerRequestId)
+              ? {upstreamProviderRequestId:result.providerRequestId} : {}),
+          } };
         }
         if (!['accepted', 'queued', 'running', 'generating', 'validating', 'reviewing'].includes(state))
           throw new CreationProviderError('Gateway original task ended with state ' + String(state), id,

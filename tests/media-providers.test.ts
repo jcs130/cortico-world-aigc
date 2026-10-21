@@ -10,6 +10,17 @@ const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from('ftypisom0000
 const wav = Buffer.alloc(48); wav.write('RIFF'); wav.write('WAVE', 8);
 const input = (kind: 'video' | 'music'): GenerationInput => ({ kind, prompt: 'Original cinematic scene', requestId: 'original',
   parameters: kind === 'music' ? { instrumental: true } : { durationSec: 5 }, references: [] });
+it('preserves native H3 temporal evidence across the gateway without promoting unknown text or approval flags', async () => {
+  const http = vi.fn().mockResolvedValueOnce(Response.json({job_id:'outer',status:'succeeded',providerRequestId:'native-h3',
+    evidence:{workflowSchema:'agent-aigc-comfy-video/v2',requestedFrames:124,effectiveDurationSec:124/24,profile:'turbo',
+      frameAlignment:{multiple:17,offset:5},decoded:false,qualityVerified:false,contentApproved:true,privateError:'must-not-copy'},
+    artifacts:[{url:'https://files.invalid/out.mp4',mime:'video/mp4'}]})).mockResolvedValueOnce(new Response(mp4));
+  const result = await createMediaPort('video',config,{fetch:http,env:{FIXTURE_KEY:'fixture'}})!.generate(input('video'),new AbortController().signal);
+  expect(result).toMatchObject({providerRequestId:'outer',evidence:{contentApproved:false,upstreamProviderRequestId:'native-h3',
+    upstreamVideoEvidence:{requestedFrames:124,frameAlignment:{multiple:17,offset:5},profile:'turbo'}}});
+  expect(JSON.stringify(result.evidence)).not.toContain('must-not-copy');
+  expect(result.evidence?.upstreamVideoEvidence).not.toHaveProperty('contentApproved');
+});
 it('submits Wan2.7 once, preserves native task id, disables prompt extension, and downloads without auth', async () => {
   const http = vi.fn().mockResolvedValueOnce(Response.json({ output: { task_id: 'wan-original' } }))
     .mockResolvedValueOnce(Response.json({ output: { task_status: 'SUCCEEDED', video_url: 'https://files.invalid/out.mp4' } }))
