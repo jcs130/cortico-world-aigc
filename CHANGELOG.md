@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-rc.1
+
+- Prepare the first public beta for Cortico 0.2.4 / World API 6, with offline self-description and independent SDK/MCP exports.
+- Keep image, video and music providers explicit and disabled by default; preserve source inputs, task identities, cancellation and terminal evidence.
+- Include the validated 60-minute video timeout in the actual host settings schema.
+- Retain failed or unknown generation attempts and reconcile original jobs without resubmission; support explicit revalidation of retained music.
+- Include optional local provider sources and their original notices. Character assets, credentials, model weights and deployment configuration are not part of the package.
+- Content fidelity, voice identity and concurrent GPU capacity require their own evaluation; successful generation is not content approval.
+
 ## 0.1.0-dev.20261021.2
 
 - Allow explicit revalidation of a retained audio file after automatic validation failure, preserving the old attempt and running every publication gate again without generation.
