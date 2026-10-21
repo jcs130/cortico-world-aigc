@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFile
 import { join } from 'node:path';
 import type {
   CreationCallContext, CreationHost, CreationJob, CreationKind, CreationOutcome, CreationRequest,
-  MediaBytes, ResolvedReference, StudioOptions, JobStatus,
+  MediaBytes, ResolvedReference, StudioOptions, JobStatus, GenerationPort, GenerationInput,
 } from '../contracts.ts';
 import { AIGC_PROTOCOL } from '../contracts.ts';
 import { CreationProviderError } from './errors.ts';
@@ -103,7 +103,10 @@ export class AigcStudio {
   }
   capabilities() {
     return { schema: AIGC_PROTOCOL, kinds: Object.fromEntries((['image', 'video', 'music'] as const)
-      .map(kind => [kind, this.options.provider(kind)?.capabilities ?? { kind, available: false }])),
+      .map(kind => {
+        try { return [kind, this.options.provider(kind)?.capabilities ?? { kind, available: false }]; }
+        catch { return [kind, { kind, available: false, reason: 'Provider configuration failed validation; check this capability configuration' }]; }
+      })),
       planner: 'Persona', identityLibrary: 'Persona Memory', playback: false, defaultEnhancement: false,
       maxConcurrent: this.options.maxConcurrent ?? 1 };
   }
@@ -113,6 +116,63 @@ export class AigcStudio {
     job.status = 'cancelled'; job.remoteOutcome = 'unknown';
     job.reason = 'Local request cancelled; remote computation/billing may continue. No global interrupt sent.';
     this.save(job);
+  }
+  private launch(job: CreationJob, resolved: ResolvedReference[], provider: GenerationPort, ctx: CreationCallContext, reconcile = false): CreationOutcome {
+    const host = this.host!, epoch = this.epoch, kind = job.kind;
+      const controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal, ...(ctx.signal ? [ctx.signal] : [])]);
+      const active: Active = { controller, done: Promise.resolve() };
+      this.active.set(job.id, active);
+      active.done = Promise.resolve().then(async () => {
+        if (this.host !== host || this.epoch !== epoch) return;
+        if (signal.aborted) {
+          if (!terminal(job.status)) { job.status = 'cancelled'; job.remoteOutcome = 'unknown'; job.reason = 'Cancelled before provider dispatch'; this.save(job); }
+          return;
+        }
+        job.status = 'running'; this.save(job);
+        try {
+          const input: GenerationInput = { kind, prompt: job.effectivePrompt!, references: resolved, parameters: job.parameters,
+            requestId: job.id, onAccepted: id => {
+              if (this.host === host && this.epoch === epoch && !terminal(job.status) && /^[\w-]{1,160}$/.test(id)) {
+                job.providerRequestId = id; this.save(job);
+              }
+            } };
+          const result = await (reconcile ? provider.reconcile!(job.providerRequestId!, input, signal) : provider.generate(input, signal));
+          signal.throwIfAborted();
+          if (this.host !== host || this.epoch !== epoch || terminal(job.status)) return;
+          if (result.artifacts.length < 1 || result.artifacts.length > 8) throw new Error('Provider did not return a bounded set of artifacts');
+          job.artifacts = result.artifacts.map((asset, i) => {
+            validateMedia(asset, kind);
+            const id = job.id + '-output-' + i; this.saveAsset(id, asset);
+            return { id, mime: asset.mime, bytes: asset.bytes.length, sha256: hash(asset.bytes), name: id + extension(asset.mime) };
+          });
+          job.status = 'succeeded';
+          Object.assign(job, { remoteOutcome: 'confirmed', model: result.model,
+            providerRequestId: result.providerRequestId ?? job.providerRequestId, usage: result.usage,
+            evidence: { ...result.evidence, containerSignature: 'checked', contentApproved: false,
+              playbackVerified: false, singingVoiceVerified: false } });
+        } catch (error) {
+          if (this.host !== host || this.epoch !== epoch || terminal(job.status)) return;
+          const confirmed = error instanceof CreationProviderError && error.terminalStatus;
+          job.status = signal.aborted ? 'cancelled' : confirmed || 'unknown';
+          job.remoteOutcome = !signal.aborted && confirmed ? 'confirmed' : 'unknown';
+          job.reason = signal.aborted ? 'Local request aborted; remote outcome may be unknown'
+            : error instanceof Error ? error.message : 'Provider failed without terminal evidence';
+          if (error instanceof CreationProviderError) {
+            if (error.providerRequestId) job.providerRequestId = error.providerRequestId;
+            if (error.evidence) job.evidence = structuredClone(error.evidence);
+          }
+        }
+        if (this.host !== host || this.epoch !== epoch) return;
+        this.save(job);
+        const out = this.outcome(job);
+        try {
+          await host.pushEvent({ source: 'aigc', type: 'aigc.job', origin: 'external', ts: job.updatedAt,
+            text: out.text, meta: { protocol: AIGC_PROTOCOL, id: job.id, terminal: terminal(job.status) }, blobs: out.blobs }, { trigger: 'flush' });
+        } catch { host.log.warn('AIGC result archived; completion event delivery failed'); }
+      }).catch(() => host.log.warn('AIGC archive failed; reconcile the original request before retrying'))
+        .finally(() => this.active.delete(job.id));
+      return this.outcome(job);
   }
   async execute(args: Record<string, unknown>, ctx: CreationCallContext = {}): Promise<CreationOutcome> {
     const host = this.host, epoch = this.epoch;
@@ -153,6 +213,25 @@ export class AigcStudio {
         }
         return this.outcome(job, args.action === 'read');
       }
+      if (args.action === 'reconcile') {
+        if (Object.keys(args).some(key => !['action','id'].includes(key))) throw Error('reconcile uses only the original id; its prompt and references cannot be changed');
+        const job = this.jobs.get(String(args.id));
+        if (!job) throw Error('Creation job not found');
+        if (!terminal(job.status) || job.status === 'succeeded') return this.outcome(job);
+        if (!job.providerRequestId || !job.providerInstanceId) throw Error('Original provider acceptance or instance identity was not recorded; operator reconciliation is required');
+        if (this.active.size >= (this.options.maxConcurrent ?? 1)) throw Error('Creation provider is busy or draining');
+        const provider = this.options.provider(job.kind);
+        if (!provider?.reconcile || provider.capabilities.instanceId !== job.providerInstanceId) throw Error('Original provider instance is not configured for reconciliation; no new generation submitted');
+        const resolved = job.references.map((reference, i) => {
+          const asset = this.asset(job.id + '-input-' + i, reference.mime);
+          if (!asset || hash(asset.bytes) !== reference.sha256) throw Error('Original reference missing or changed');
+          return {...reference,...asset} as ResolvedReference;
+        });
+        job.reconciliations = [...(job.reconciliations ?? []), {at:new Date().toISOString(),previousStatus:job.status,
+          ...(job.reason ? {previousReason:job.reason} : {}),...(job.evidence ? {previousEvidence:structuredClone(job.evidence)} : {})}];
+        job.status = 'accepted'; delete job.reason; this.save(job);
+        return this.launch(job, resolved, provider, ctx, true);
+      }
       if (args.action !== 'generate') throw new Error('Unknown AIGC action');
       const kind = args.kind as CreationKind;
       if (!['image', 'video', 'music'].includes(kind)) throw new Error('Creation kind must be image, video or music');
@@ -191,65 +270,13 @@ export class AigcStudio {
       const job: CreationJob = { schema: AIGC_PROTOCOL, id: randomUUID(), requestId, signature, kind,
         prompt: args.prompt, parameters: structuredClone(args.parameters ?? {}) as Record<string, unknown>,
         references: resolved.map(({ bytes, ...r }) => ({ ...r, bytes: bytes.length })),
-        status: 'accepted', createdAt: now, updatedAt: now, provider: provider.capabilities.provider, model: provider.capabilities.model,
+        status: 'accepted', createdAt: now, updatedAt: now, provider: provider.capabilities.provider, model: provider.capabilities.model, providerInstanceId: provider.capabilities.instanceId,
         artifacts: [], goalCompleted: false,
         ...(typeof args.task_id === 'string' ? { taskId: args.task_id } : ctx.taskId ? { taskId: ctx.taskId } : {}) };
       resolved.forEach((r, i) => this.saveAsset(job.id + '-input-' + i, r));
       job.effectivePrompt = withReferenceRoles(job.prompt, job.references);
       this.save(job); // Intent exists before the possibly billable provider call.
-      const controller = new AbortController();
-      const signal = AbortSignal.any([controller.signal, ...(ctx.signal ? [ctx.signal] : [])]);
-      const active: Active = { controller, done: Promise.resolve() };
-      this.active.set(job.id, active);
-      active.done = Promise.resolve().then(async () => {
-        if (this.host !== host || this.epoch !== epoch) return;
-        if (signal.aborted) {
-          if (!terminal(job.status)) { job.status = 'cancelled'; job.remoteOutcome = 'unknown'; job.reason = 'Cancelled before provider dispatch'; this.save(job); }
-          return;
-        }
-        job.status = 'running'; this.save(job);
-        try {
-          const result = await provider.generate({ kind, prompt: job.effectivePrompt!, references: resolved, parameters: job.parameters,
-            requestId: job.id, onAccepted: id => {
-              if (this.host === host && this.epoch === epoch && !terminal(job.status) && /^[\w-]{1,160}$/.test(id)) {
-                job.providerRequestId = id; this.save(job);
-              }
-            } }, signal);
-          signal.throwIfAborted();
-          if (this.host !== host || this.epoch !== epoch || terminal(job.status)) return;
-          if (result.artifacts.length < 1 || result.artifacts.length > 8) throw new Error('Provider did not return a bounded set of artifacts');
-          job.artifacts = result.artifacts.map((asset, i) => {
-            validateMedia(asset, kind);
-            const id = job.id + '-output-' + i; this.saveAsset(id, asset);
-            return { id, mime: asset.mime, bytes: asset.bytes.length, sha256: hash(asset.bytes), name: id + extension(asset.mime) };
-          });
-          job.status = 'succeeded';
-          Object.assign(job, { remoteOutcome: 'confirmed', model: result.model,
-            providerRequestId: result.providerRequestId ?? job.providerRequestId, usage: result.usage,
-            evidence: { ...result.evidence, containerSignature: 'checked', contentApproved: false,
-              playbackVerified: false, singingVoiceVerified: false } });
-        } catch (error) {
-          if (this.host !== host || this.epoch !== epoch || terminal(job.status)) return;
-          const confirmed = error instanceof CreationProviderError && error.terminalStatus;
-          job.status = signal.aborted ? 'cancelled' : confirmed || 'unknown';
-          job.remoteOutcome = !signal.aborted && confirmed ? 'confirmed' : 'unknown';
-          job.reason = signal.aborted ? 'Local request aborted; remote outcome may be unknown'
-            : error instanceof Error ? error.message : 'Provider failed without terminal evidence';
-          if (error instanceof CreationProviderError) {
-            if (error.providerRequestId) job.providerRequestId = error.providerRequestId;
-            if (error.evidence) job.evidence = structuredClone(error.evidence);
-          }
-        }
-        if (this.host !== host || this.epoch !== epoch) return;
-        this.save(job);
-        const out = this.outcome(job);
-        try {
-          await host.pushEvent({ source: 'aigc', type: 'aigc.job', origin: 'external', ts: job.updatedAt,
-            text: out.text, meta: { protocol: AIGC_PROTOCOL, id: job.id, terminal: terminal(job.status) }, blobs: out.blobs }, { trigger: 'flush' });
-        } catch { host.log.warn('AIGC result archived; completion event delivery failed'); }
-      }).catch(() => host.log.warn('AIGC archive failed; reconcile the original request before retrying'))
-        .finally(() => this.active.delete(job.id));
-      return this.outcome(job);
+      return this.launch(job, resolved, provider, ctx);
     } catch (error) { return { text: error instanceof Error ? error.message : 'Creation operation failed', failed: true }; }
   }
 }

@@ -1044,6 +1044,33 @@ class BoundaryTest(unittest.TestCase):
             self.assertNotIn("requesterKey", messages[1]["content"])
             self.assertNotIn("requestKey", messages[1]["content"])
 
+    def test_review_resolves_explicit_environment_key_without_persisting_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            raw = {"stateDir": directory, "musicDir": directory, "promptTemplateFile": "template.json", "referenceAudio": "voice.wav", "referenceAudioAuthorized": True, "comfy": {"endpoint": "http://generation.invalid"}, "review": {"endpoint": "http://review.invalid", "model": "deployment-model", "apiKeyEnv": "AIGC_REVIEW_TEST_KEY"}}
+            cfg = gateway_module.normalize_config(raw)
+            services = gateway_module.ExternalServices(cfg)
+            captured = []
+            def response(url, data=None, timeout=20, headers=None):
+                captured.append(headers)
+                return {"choices": [{"message": {"content": json.dumps(ALLOW)}}]}
+            services._json = response
+            with patch.dict(os.environ, {"AIGC_REVIEW_TEST_KEY": "fixture-env-key"}):
+                self.assertEqual(services.review("input", REQUEST), ALLOW)
+            self.assertEqual(captured, [{"Authorization": "Bearer fixture-env-key"}])
+            self.assertNotIn("fixture-env-key", json.dumps(cfg))
+            captured.clear()
+            with patch.dict(os.environ, {}, clear=True), self.assertRaises(gateway_module.GatewayError):
+                services.review("input", REQUEST)
+            self.assertEqual(captured, [])
+            for invalid in ("not an env name", 42):
+                bad = copy.deepcopy(raw)
+                bad["review"]["apiKeyEnv"] = invalid
+                with self.assertRaises(gateway_module.GatewayError):
+                    gateway_module.normalize_config(bad)
+            raw["review"]["apiKey"] = "fixture-inline-key"
+            with self.assertRaises(gateway_module.GatewayError):
+                gateway_module.normalize_config(raw)
+
     def test_trusted_extra_body_sets_provider_options_without_overwriting_context(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = gateway_module.normalize_config({"stateDir": directory, "musicDir": directory, "promptTemplateFile": "template.json", "referenceAudio": "voice.wav", "referenceAudioAuthorized": True, "comfy": {"endpoint": "http://generation.invalid"}, "review": {"endpoint": "http://review.invalid", "model": "deployment-model", "extraBody": {"enable_thinking": False, "max_tokens": 600}}})

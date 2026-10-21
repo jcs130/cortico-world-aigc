@@ -26,8 +26,10 @@ export interface GenerationResult {
 }
 export interface GenerationPort {
   capabilities: { kind: CreationKind; generate: boolean; edit: boolean; maxReferences: number; provider: string;
-    model?: string; parameterKeys?: readonly string[] };
+    model?: string; parameterKeys?: readonly string[]; requiredReferences?: number; instanceId?: string; reconcile?: boolean };
   generate(input: GenerationInput, signal: AbortSignal): Promise<GenerationResult>;
+  /** Retrieve an original provider task; never submit generation again. */
+  reconcile?(providerRequestId: string, input: GenerationInput, signal: AbortSignal): Promise<GenerationResult>;
 }
 export interface ImageGenerationRequest {
   prompt: string; images: readonly ArtImage[]; size?: string; requestId?: string;
@@ -37,8 +39,9 @@ export interface ImageGenerationResult extends ArtImage {
   model: string; providerRequestId?: string; usage?: Record<string, unknown>;
 }
 export interface ImageGenerationPort {
-  capabilities: { generate: boolean; edit: boolean; maxReferences: number };
+  capabilities: { generate: boolean; edit: boolean; maxReferences: number; instanceId?:string; reconcile?:boolean };
   generate(request: ImageGenerationRequest, signal: AbortSignal): Promise<ImageGenerationResult>;
+  reconcile?(providerRequestId:string, request:ImageGenerationRequest, signal:AbortSignal):Promise<ImageGenerationResult>;
 }
 export interface Flux3Configuration {
   unet: string; clip: string; vae: string; width: number; height: number; steps: 16;
@@ -51,13 +54,18 @@ export interface ImageProviderConfig {
   flux3?: Flux3Configuration;
 }
 export interface MediaProviderConfig {
-  provider: 'none' | 'gateway' | 'bailian-wan27' | 'fal-music' | 'yue-gateway';
+  provider: 'none' | 'gateway' | 'bailian-wan27' | 'fal-music' | 'yue-gateway' | 'comfyui-workflow';
   /** Full submit URL for native APIs; base URL for the documented gateway. */
   endpoint: string; model: string; apiKeyEnv: string;
-  resultHosts: string[]; timeoutMs: number; pollMs: number;
+  /** Comma-separated in the settings UI; legacy SDK arrays remain accepted. */
+  resultHosts: string | string[]; timeoutMs: number; pollMs: number;
   maxReferences: number;
   /** Only the explicit local YuE bridge may read this operator-selected catalog. */
   libraryDirectory?: string;
+  /** Opt-in retrieval of retained YuE WAV candidates; never implies review approval. */
+  artifactDirectory?: string;
+  /** Explicit operator-owned ComfyUI video graph and binding contract. */
+  workflowFile?: string;
 }
 export interface CreationRequest {
   kind: CreationKind; prompt: string; request_id: string;
@@ -71,6 +79,8 @@ export interface CreationJob {
   references: Array<MediaReference & { sha256: string; mime: string; bytes: number }>;
   status: JobStatus; createdAt: string; updatedAt: string;
   provider: string; providerRequestId?: string; model?: string;
+  providerInstanceId?: string;
+  reconciliations?: Array<{at:string;previousStatus:JobStatus;previousReason?:string;previousEvidence?:Record<string,unknown>}>;
   artifacts: OutputArtifact[]; usage?: Record<string, unknown>; evidence?: Record<string, unknown>;
   reason?: string; remoteOutcome?: 'unknown' | 'confirmed';
   /** Generation is not playback, current-world evidence, content adoption or goal completion. */

@@ -16,6 +16,41 @@ const directory = () => { const dir = mkdtempSync(join(tmpdir(), 'aigc-')); dire
 afterEach(() => { vi.restoreAllMocks(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const request = { action: 'generate', kind: 'image', request_id: 'stable', prompt: 'A quiet warm village' };
 const fakeHost = () => ({ blob: vi.fn(() => image), pushEvent: vi.fn(async (_event: any, _options?: any) => ({})), log: { warn: vi.fn() } }) satisfies CreationHost;
+it('reports one invalid provider without hiding the other configured capabilities', () => {
+  const studio = new AigcStudio({ provider: kind => {
+    if (kind === 'video') throw Error('Invalid URL including private configuration');
+    return {capabilities:{kind,provider:'fixture',generate:true,edit:false,maxReferences:0},generate:async()=>({artifacts:[],model:'fixture'})};
+  } });
+  const result = studio.capabilities();
+  expect(result.kinds.video).toMatchObject({available:false});
+  expect(result.kinds.image).toMatchObject({generate:true});
+  expect(JSON.stringify(result)).not.toContain('private configuration');
+});
+it('reconciles the original accepted task once, retains failure evidence and never generates twice',async()=>{
+ const dir=directory(),host=fakeHost();
+ const provider:GenerationPort={capabilities:{kind:'image',provider:'fixture',model:'fixture',generate:true,edit:true,maxReferences:1,instanceId:'original-instance',reconcile:true},
+  generate:vi.fn(async input=>{input.onAccepted?.('original-task');throw new CreationProviderError('Lost original response','original-task');}),
+  reconcile:vi.fn(async (id,input)=>{expect(id).toBe('original-task');expect(input.references[0].bytes).toEqual(png);return{artifacts:[image],model:'fixture',providerRequestId:id};})};
+ const studio=new AigcStudio({directory:dir,provider:()=>provider});studio.start(host);
+ const accepted=JSON.parse((await studio.execute({...request,references:[{handle:'source',role:'edit-target'}]})).text);
+ await finished(studio,accepted.id);expect(studio.get(accepted.id)?.status).toBe('unknown');
+ host.blob.mockReturnValue(null as any); // Recovery must use the archived original, not current host state.
+ const result=await studio.execute({action:'reconcile',id:accepted.id});expect(result.failed).not.toBe(true);
+ await finished(studio,accepted.id);
+ expect(studio.get(accepted.id)).toMatchObject({id:accepted.id,status:'succeeded',providerRequestId:'original-task',reconciliations:[{previousStatus:'unknown',previousReason:'Lost original response'}]});
+ expect(provider.generate).toHaveBeenCalledOnce();expect(provider.reconcile).toHaveBeenCalledOnce();studio.stop();
+});
+it('rejects reconciliation on a changed provider instance or altered original parameters',async()=>{
+ const provider:GenerationPort={capabilities:{kind:'image',provider:'fixture',generate:true,edit:false,maxReferences:0,instanceId:'first'},
+  generate:async input=>{input.onAccepted?.('original');throw new CreationProviderError('Unknown','original');},
+  reconcile:vi.fn(async()=>({artifacts:[image],model:'fixture'}))};
+ const studio=new AigcStudio({provider:()=>provider});studio.start(fakeHost());
+ const original=JSON.parse((await studio.execute(request)).text);await finished(studio,original.id);
+ expect((await studio.execute({action:'reconcile',id:original.id,prompt:'replacement'})).failed).toBe(true);
+ provider.capabilities.instanceId='another';
+ expect((await studio.execute({action:'reconcile',id:original.id})).text).toContain('Original provider instance');
+ expect(provider.reconcile).not.toHaveBeenCalled();studio.stop();
+});
 function rig(generate?: GenerationPort['generate']) {
   const provider: GenerationPort = { capabilities: { kind: 'image', provider: 'fixture', generate: true, edit: true, maxReferences: 10 },
     generate: generate ?? vi.fn(async () => ({ artifacts: [image], model: 'fixture' })) };

@@ -1,7 +1,7 @@
 /** FLUX 3's native Comfy graph. Only an explicit generate() performs I/O. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Flux3Configuration, ImageProviderConfig, ImageGenerationPort, ImageGenerationRequest } from '../contracts.ts';
+import type { Flux3Configuration, ImageProviderConfig, ImageGenerationPort, ImageGenerationRequest, ImageGenerationResult } from '../contracts.ts';
 import { boundedBody } from './http.ts';
 import { imageMime, validateArtImage } from './media.ts';
 import { ImageGenerationError } from './errors.ts';
@@ -56,21 +56,20 @@ export function createComfyFlux3Port(config: ImageProviderConfig, options: { fet
     throw new Error('Invalid FLUX 3 capability configuration');
   if (config.apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.apiKeyEnv)) throw new Error('Invalid image key environment variable name');
   const http = options.fetch ?? globalThis.fetch, base = endpoint.href.replace(/\/$/, '') + '/';
-  return {
-    capabilities: { generate: config.generate, edit: config.edit, maxReferences: config.maxReferences },
-    async generate(request, parent) {
+  const run=async(request:ImageGenerationRequest,parent:AbortSignal,originalId?:string):Promise<ImageGenerationResult>=>{
       const signal = AbortSignal.any([parent, AbortSignal.timeout(config.timeoutMs)]);
       signal.throwIfAborted();
       if (!request.prompt.trim() || request.prompt.length > 16000) throw new Error('A host-written image prompt of at most 16000 characters is required');
-      if (request.images.length ? !config.edit : !config.generate) throw new Error('Selected image capability is disabled');
-      if (request.images.length > config.maxReferences) throw new Error('Too many image references');
+      if (!originalId && (request.images.length ? !config.edit : !config.generate)) throw new Error('Selected image capability is disabled');
+      if (!originalId && request.images.length > config.maxReferences) throw new Error('Too many image references');
       for (const image of request.images) validateArtImage(image);
       // Validate the canvas before any upload or service call.
       buildFlux3Graph(models, request, []);
       const key = config.apiKeyEnv ? (options.env ?? process.env)[config.apiKeyEnv] : undefined;
       if (config.apiKeyEnv && (!key || /[\r\n]/.test(key))) throw new Error('Image API key environment variable is missing or invalid');
       const auth: Record<string, string> = key ? { Authorization: `Bearer ${key}` } : {};
-      let promptId: string | undefined;
+      let promptId: string | undefined=originalId;
+      if(originalId&&!/^[\w-]{1,160}$/.test(originalId))throw Error('Invalid original image task id');
       const api = async (route: string, init: RequestInit = {}) => {
         let response: Response;
         try { response = await http(new URL(route, base), { ...init, headers: { ...auth, ...init.headers }, signal, redirect: 'error' }); }
@@ -79,6 +78,7 @@ export function createComfyFlux3Port(config: ImageProviderConfig, options: { fet
         try { return JSON.parse(Buffer.from(await boundedBody(response, 2 * 1024 * 1024, signal)).toString('utf8')); }
         catch { signal.throwIfAborted(); throw new ImageGenerationError('Invalid FLUX 3 response; inspect original request before retrying', promptId); }
       };
+      if(!originalId){
       // Exact configured node capabilities and model names; never scan other ports or choose another model.
       for (const [name, field, value] of [['UNETLoader', 'unet_name', models.unet], ['CLIPLoader', 'clip_name', models.clip], ['VAELoader', 'vae_name', models.vae]] as const) {
         const info = (await api('object_info/' + name))[name];
@@ -103,6 +103,7 @@ export function createComfyFlux3Port(config: ImageProviderConfig, options: { fet
       if (typeof submitted.prompt_id !== 'string' || !/^[\w-]{1,160}$/.test(submitted.prompt_id)) throw new Error('FLUX 3 acceptance is unknown; no automatic resubmission');
       promptId = submitted.prompt_id;
       request.onAccepted?.(promptId!);
+      }
       try {
         for (;;) {
           signal.throwIfAborted();
@@ -133,6 +134,10 @@ export function createComfyFlux3Port(config: ImageProviderConfig, options: { fet
         if (signal.aborted) throw new ImageGenerationError('Local FLUX 3 wait cancelled; provider task may still be computing. Reconcile by providerRequestId', promptId);
         throw error;
       }
-    },
+    };
+  return {
+    capabilities: { generate: config.generate, edit: config.edit, maxReferences: config.maxReferences,
+      instanceId:createHash('sha256').update(JSON.stringify([endpoint.href,config.model,models])).digest('hex'),reconcile:true },
+    generate:run,reconcile:(id,request,signal)=>run(request,signal,id),
   };
 }

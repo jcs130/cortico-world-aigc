@@ -55,4 +55,9 @@ describe('FLUX 3 explicit native provider', () => {
     await vi.waitFor(() => expect(f.paths).toContain('/prompt')); controller.abort();
     await expect(task).rejects.toMatchObject({ providerRequestId: 'owned-prompt' }); expect(f.paths.some(p => p.includes('interrupt'))).toBe(false);
   });
+  it('retrieves an original image without model loading, uploads or submission, even after new generation is disabled',async()=>{
+    const f=fixture(),port=createImageGenerationPort({...cfg,generate:false,edit:false},{fetch:f.http})!;
+    const result=await port.reconcile!('owned-prompt',{prompt:'original',images:[],size:'1280x704'},new AbortController().signal);
+    expect(result.bytes).toEqual(png);expect(f.paths).toEqual(['/history/owned-prompt','/view']);expect(f.forms).toHaveLength(0);
+  });
 });

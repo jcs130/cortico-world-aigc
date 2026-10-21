@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-dev.20261021.1
+
+- Match Cortico configuration round trips: use comma-separated result hosts and expose generation, polling and local workflow settings.
+- Add explicit operator-authored ComfyUI video workflows with typed inputs, bounded error receipts and original task identity.
+- Reconcile original image/video/gateway tasks without resubmission; pin provider identity and preserve earlier failure evidence.
+- Retrieve retained YuE audio as an unapproved review candidate, preserving the original failed lyric/content result.
+- Allow the optional YuE review gateway to read an existing credential environment variable; keep credentials out of package data.
+- Isolate invalid provider settings so other capabilities remain queryable.
+
 ## 0.1.0-dev.20261020.3
 
 - Own artwork planning, optional YuE workers and EdenLive video inference; keep game capture in the public Minecraft core.

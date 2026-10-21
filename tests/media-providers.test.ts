@@ -1,6 +1,9 @@
 import { expect, it, vi } from 'vitest';
 import { createMediaPort } from '../src/core/providers.ts';
 import type { GenerationInput, MediaProviderConfig } from '../src/contracts.ts';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const config: MediaProviderConfig = { provider: 'gateway', endpoint: 'https://fixture.invalid/base/', model: 'fixture',
   apiKeyEnv: 'FIXTURE_KEY', timeoutMs: 1000, pollMs: 50, resultHosts: ['files.invalid'], maxReferences: 0 };
 const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from('ftypisom00000000')]);
@@ -51,4 +54,32 @@ it('keeps generic gateway prefixes and rejects unexpected download hosts', async
   const port = createMediaPort('video', config, { fetch: http, env: { FIXTURE_KEY: 'fixture' } })!;
   await expect(port.generate(input('video'), new AbortController().signal)).rejects.toThrow('explicitly configured');
   expect(String(http.mock.calls[0][0])).toBe('https://fixture.invalid/base/jobs'); expect(http).toHaveBeenCalledOnce();
+});
+it.each([['files.invalid'], 'files.invalid,127.0.0.1'])('accepts legacy SDK and editable host lists: %s', async resultHosts => {
+  const http = vi.fn().mockResolvedValueOnce(Response.json({ job_id: 'owned', status: 'succeeded',
+    artifacts: [{ url: 'https://files.invalid/output.mp4', mime: 'video/mp4' }] }))
+    .mockResolvedValueOnce(new Response(mp4));
+  const port = createMediaPort('video', { ...config, resultHosts: resultHosts as string | string[] }, { fetch: http, env: { FIXTURE_KEY: 'fixture' } })!;
+  expect((await port.generate(input('video'), new AbortController().signal)).providerRequestId).toBe('owned');
+  expect(http.mock.calls[1][1].headers).toBeUndefined();
+});
+it('retrieves a retained original YuE candidate explicitly without declaring lyrics approved or regenerating',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'yue-artifact-'));
+ try{
+  mkdirSync(join(root,'original'));writeFileSync(join(root,'original','song.wav'),wav);
+  const http=vi.fn().mockResolvedValueOnce(Response.json({jobId:'original',state:'failed'}));
+  const port=createMediaPort('music',{...config,provider:'yue-gateway',artifactDirectory:root},{fetch:http,env:{FIXTURE_KEY:'fixture'}})!;
+  const result=await port.generate({...input('music'),parameters:{instrumental:true,durationSec:30}},new AbortController().signal);
+  expect(result.artifacts[0].bytes).toEqual(wav);
+  expect(result.evidence).toMatchObject({upstreamState:'failed',retainedCandidate:true,contentApproved:false,lyricsVerified:false,adoptionRequired:true});
+  expect(http).toHaveBeenCalledOnce();
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
+it('reconciles a gateway task through GET only',async()=>{
+ const http=vi.fn().mockResolvedValueOnce(Response.json({job_id:'original',status:'succeeded',artifacts:[{url:'https://files.invalid/out.mp4',mime:'video/mp4'}]}))
+  .mockResolvedValueOnce(new Response(mp4));
+ const port=createMediaPort('video',config,{fetch:http,env:{FIXTURE_KEY:'fixture'}})!;
+ expect((await port.reconcile!('original',input('video'),new AbortController().signal)).providerRequestId).toBe('original');
+ expect(http.mock.calls.every(([,options])=>!options?.method||options.method==='GET')).toBe(true);
+ expect(http.mock.calls.map(([url])=>new URL(url).pathname)).toEqual(['/base/jobs/original','/out.mp4']);
 });

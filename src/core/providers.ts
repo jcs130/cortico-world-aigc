@@ -1,17 +1,20 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AigcWorldConfig, CreationKind, GenerationInput, GenerationPort, GenerationResult, MediaProviderConfig } from '../contracts.ts';
 import { createImageGenerationPort, IMAGE_PROVIDER_DEFAULTS } from './image-generation.ts';
 import { boundedBody } from './http.ts';
 import { CreationProviderError } from './errors.ts';
+import { createComfyVideoPort } from './comfy-workflow.ts';
 
 const MEDIA_DEFAULTS: MediaProviderConfig = {
-  provider: 'none', endpoint: '', model: '', apiKeyEnv: '', resultHosts: [], timeoutMs: 1_800_000, pollMs: 5000, maxReferences: 0,
+  provider: 'none', endpoint: '', model: '', apiKeyEnv: '', resultHosts: '', timeoutMs: 1_800_000, pollMs: 5000, maxReferences: 0,
 };
 export function aigcDefaults(): AigcWorldConfig {
   return { enabled: false, image: structuredClone(IMAGE_PROVIDER_DEFAULTS),
-    video: structuredClone(MEDIA_DEFAULTS), music: structuredClone(MEDIA_DEFAULTS) };
+    video: { ...structuredClone(MEDIA_DEFAULTS), workflowFile: '' },
+    music: { ...structuredClone(MEDIA_DEFAULTS), libraryDirectory: '', artifactDirectory: '' } };
 }
 const safeId = (value: unknown): string => {
   if (typeof value !== 'string' || !/^[\w-]{1,160}$/.test(value)) throw new Error('Provider acceptance id missing or invalid; do not resubmit');
@@ -27,6 +30,14 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
   options: { fetch?: typeof fetch; env?: Record<string, string | undefined> } = {}): GenerationPort | null {
   config = structuredClone(config);
   if (config.provider === 'none') return null;
+  if (kind === 'video' && config.provider === 'comfyui-workflow') return createComfyVideoPort(config, options);
+  const hosts = typeof config.resultHosts === 'string' ? config.resultHosts.split(',').map(s => s.trim()).filter(Boolean) : config.resultHosts;
+  if (!Array.isArray(hosts) || hosts.some(host => {
+    if (typeof host !== 'string' || !host) return true;
+    try { return new URL('http://' + host).hostname.toLowerCase() !== host.toLowerCase(); } catch { return true; }
+  }))
+    throw new Error('Invalid explicit media result hosts');
+  const resultHosts = new Set(hosts.map(host => host.toLowerCase()));
   const endpoint = apiUrl(config.endpoint);
   if (!config.model || !Number.isInteger(config.pollMs) || config.pollMs < 50 || config.pollMs > 60000
     || !Number.isInteger(config.maxReferences) || config.maxReferences < 0 || config.maxReferences > 14
@@ -64,16 +75,13 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
     if (typeof raw !== 'string') throw new Error('Provider output URL is missing');
     const url = new URL(raw);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.hash
-      || !config.resultHosts.includes(url.hostname)) throw new Error('Media result host is not explicitly configured');
+      || !resultHosts.has(url.hostname.toLowerCase())) throw new Error('Media result host is not explicitly configured');
     // Storage never receives inference credentials.
     const response = await http(url, { signal, redirect: 'error' });
     if (!response.ok) { await response.body?.cancel(); throw new Error('Media output download failed; do not regenerate'); }
     return { bytes: await boundedBody(response, 256 * 1024 * 1024, signal), mime };
   };
-  return {
-    capabilities: { kind, generate: true, edit: !native && config.maxReferences > 0, maxReferences: config.maxReferences, provider: config.provider,
-      model: config.model, ...(parameterKeys ? { parameterKeys } : {}) },
-    async generate(input, parent): Promise<GenerationResult> {
+  const run = async (input: GenerationInput, parent: AbortSignal, originalId?: string): Promise<GenerationResult> => {
       const signal = AbortSignal.any([parent, AbortSignal.timeout(config.timeoutMs)]);
       signal.throwIfAborted();
       if (input.kind !== kind || input.references.length > config.maxReferences) throw new Error('Unsupported media kind/references');
@@ -139,12 +147,16 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
       if (legacyYue && (input.references.length || !Number.isInteger(p.durationSec) || Number(p.durationSec) < 30
         || Number(p.durationSec) > 120 || p.instrumental !== true && !String(p.lyrics ?? '').trim()))
         throw new Error('YuE bridge requires durationSec 30..120 and lyrics or instrumental=true; voice cloning is not implied');
-      let result = await json(new URL('jobs', base), signal, { method: 'POST', body: JSON.stringify(body) });
+      let result = originalId ? await json(new URL('jobs/' + safeId(originalId), base), signal)
+        : await json(new URL('jobs', base), signal, { method: 'POST', body: JSON.stringify(body) });
       const id = safeId(result.job_id ?? result.jobId); input.onAccepted?.(id);
+      if (originalId && id !== originalId) throw new Error('Provider returned a different original task');
       for (;;) {
         const state = result.status ?? result.state;
-        if (state === 'succeeded' || legacyYue && ['ready', 'review'].includes(state)) {
+        if (state === 'succeeded' || legacyYue && ['ready', 'review'].includes(state)
+          || legacyYue && state === 'failed' && config.artifactDirectory) {
           let artifacts;
+          let retainedCandidate = false;
           if (Array.isArray(result.artifacts)) artifacts = await Promise.all(result.artifacts.map((a: any) => download(a.url, a.mime, signal)));
           else if (legacyYue && config.libraryDirectory && typeof result.trackId === 'string') {
             const root = realpathSync(config.libraryDirectory);
@@ -154,9 +166,20 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
             const file = realpathSync(join(root, track.wavFile)), rel = relative(root, file);
             if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('YuE catalog asset escapes configured directory');
             artifacts = [{ bytes: readFileSync(file), mime: 'audio/wav' }];
+          } else if (legacyYue && config.artifactDirectory && ['ready', 'review', 'failed'].includes(state)) {
+            const root = realpathSync(config.artifactDirectory);
+            let file: string;
+            try { file = realpathSync(join(root, id, 'song.wav')); }
+            catch { throw new CreationProviderError('Original gateway ended without a retrievable retained WAV; inspect the original job', id, 'failed', {providerState:state,artifactMissing:true}); }
+            const rel = relative(root, file);
+            if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Retained YuE artifact escapes configured directory');
+            if (statSync(file).size > 256 * 1024 * 1024) throw new Error('Retained YuE artifact is too large');
+            artifacts = [{ bytes: readFileSync(file), mime: 'audio/wav' }];
+            retainedCandidate = true;
           } else throw new Error('Completed gateway job has no retrievable artifact');
           return { artifacts, model: config.model, providerRequestId: id, evidence: {
-            upstreamState: state, contentApproved: false, singingVoiceVerified: false } };
+            upstreamState: state, retainedCandidate, contentApproved: false, lyricsVerified: false,
+            adoptionRequired: true, singingVoiceVerified: false } };
         }
         if (!['accepted', 'queued', 'running', 'generating', 'validating', 'reviewing'].includes(state))
           throw new CreationProviderError('Gateway original task ended with state ' + String(state), id,
@@ -164,7 +187,13 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
         await delay(config.pollMs, undefined, { signal });
         result = await json(new URL('jobs/' + id, base), signal);
       }
-    },
+    };
+  return {
+    capabilities: { kind, generate: true, edit: !native && config.maxReferences > 0, maxReferences: config.maxReferences, provider: config.provider,
+      instanceId:createHash('sha256').update(JSON.stringify([config.provider,endpoint.href,config.model])).digest('hex'),
+      reconcile:!native, model: config.model, ...(parameterKeys ? { parameterKeys } : {}) },
+    generate:run,
+    ...(!native ? {reconcile:(id:string,input:GenerationInput,signal:AbortSignal)=>run(input,signal,id)} : {}),
   };
 }
 export function createCreationPort(kind: CreationKind, cfg: AigcWorldConfig,
@@ -172,16 +201,20 @@ export function createCreationPort(kind: CreationKind, cfg: AigcWorldConfig,
   if (kind !== 'image') return createMediaPort(kind, cfg[kind], options);
   const port = createImageGenerationPort(cfg.image, options);
   if (!port) return null;
-  return {
-    capabilities: { kind, provider: cfg.image.provider, model: cfg.image.model, parameterKeys: ['size'], ...port.capabilities },
-    async generate(input, signal) {
+  const execute = async(input:GenerationInput,signal:AbortSignal,originalId?:string):Promise<GenerationResult>=>{
       if (Object.keys(input.parameters).some(key => key !== 'size')) throw new Error('Unsupported image parameter; supported: size');
-      const result = await port.generate({ prompt: input.prompt,
+      if(input.parameters.size!==undefined&&typeof input.parameters.size!=='string')throw Error('Image size must be a width x height string');
+      const request = { prompt: input.prompt,
         images: input.references.map(({ bytes, mime }) => ({ bytes, mime })),
         ...(typeof input.parameters.size === 'string' ? { size: input.parameters.size } : {}),
-        requestId: input.requestId, onAccepted: input.onAccepted }, signal);
+        requestId: input.requestId, onAccepted: input.onAccepted };
+      const result = await (originalId ? port.reconcile!(originalId,request,signal) : port.generate(request,signal));
       return { artifacts: [{ bytes: result.bytes, mime: result.mime }], model: result.model,
         providerRequestId: result.providerRequestId, usage: result.usage };
-    },
+    };
+  return {
+    capabilities: { kind, provider: cfg.image.provider, model: cfg.image.model, parameterKeys: ['size'], ...port.capabilities },
+    generate:execute,
+    ...(port.reconcile?{reconcile:(id:string,input:GenerationInput,signal:AbortSignal)=>execute(input,signal,id)}:{}),
   };
 }

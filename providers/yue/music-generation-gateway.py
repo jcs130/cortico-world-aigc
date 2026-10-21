@@ -202,6 +202,11 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
         raise GatewayError("需要语义审核模型配置。")
     if "apiKey" in cfg["review"] and not isinstance(cfg["review"]["apiKey"], str):
         raise GatewayError("审核密钥配置无效。")
+    key_env = cfg["review"].get("apiKeyEnv", "")
+    if not isinstance(key_env, str) or key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+        raise GatewayError("审核密钥环境变量名无效。")
+    if key_env and cfg["review"].get("apiKey"):
+        raise GatewayError("审核密钥只能选择环境变量或配置值中的一种。")
     if cfg["review"]["mode"] not in ("manual", "automatic"):
         raise GatewayError("审核模式需要 manual 或 automatic。")
     for value, maximum in ((cfg["review"]["maxAttempts"], 3), (cfg["comfy"]["maxTimeoutExtensions"], 4)):
@@ -603,7 +608,10 @@ class ExternalServices:
             ],
         }
         payload.update(copy.deepcopy(cfg["extraBody"]))
-        headers = {"Authorization": "Bearer " + cfg["apiKey"]} if cfg.get("apiKey") else {}
+        key = os.environ.get(cfg["apiKeyEnv"]) if cfg.get("apiKeyEnv") else cfg.get("apiKey")
+        if cfg.get("apiKeyEnv") and not key or key and (not isinstance(key, str) or "\r" in key or "\n" in key):
+            raise GatewayError("审核密钥缺失或无效；未调用模型。")
+        headers = {"Authorization": "Bearer " + key} if key else {}
         result = self._json(cfg["endpoint"], payload, cfg["timeoutSec"], headers)
         value = result["choices"][0]["message"]["content"]
         return parse_review_content(value)

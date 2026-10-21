@@ -7,6 +7,9 @@ import { parseExtensionManifest } from 'cortico/extensions/manifest.ts';
 import { dryMountWorld } from 'cortico/extensions/dry-mount.ts';
 import { checkDescribe } from 'cortico/extensions/describe-export.ts';
 import definition from '../src/index.ts';
+import { readGroupValues, coerceGroupValues } from 'cortico/core/config-schema.ts';
+import { creationConfigGroup } from '../src/config.ts';
+import { aigcDefaults } from '../src/core/providers.ts';
 afterEach(() => vi.restoreAllMocks());
 it('passes actual Cortico 0.2.4 manifest, configuration, dry-mount and full self-description checks without network', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'aigc-official-')), packageDir = fileURLToPath(new URL('../', import.meta.url));
@@ -19,4 +22,16 @@ it('passes actual Cortico 0.2.4 manifest, configuration, dry-mount and full self
     expect((await checkDescribe('world', definition, 'describe.json', opts)).failures).toEqual([]);
     expect(network).not.toHaveBeenCalled();
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+it('round-trips settings with the real host instead of coercing host lists into numeric pairs', () => {
+  const cfg = aigcDefaults();
+  cfg.video.resultHosts = '127.0.0.1,files.example';
+  const group = creationConfigGroup();
+  const values = readGroupValues({ worlds: { aigc: cfg } } as any, group);
+  expect(values['worlds.aigc.video.resultHosts']).toBe('127.0.0.1,files.example');
+  expect(values['worlds.aigc.image.generate']).toBe(true);
+  expect(values['worlds.aigc.image.flux3.steps']).toBe(16);
+  expect(coerceGroupValues(group, { ...values, 'worlds.aigc.music.libraryDirectory': 'D:/media/music' }))
+    .toMatchObject({ values: { 'worlds.aigc.video.resultHosts': '127.0.0.1,files.example',
+      'worlds.aigc.music.libraryDirectory': 'D:/media/music' } });
 });

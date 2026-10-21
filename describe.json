@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "aigc_create",
-      "description": "Image, video and music creation through explicitly configured providers. Read capabilities first. generate needs kind, a final host-written prompt and stable request_id. References use Core/Persona handles with explicit roles; put one edit-target/scene-layout first, identity sheets after it. parameters are provider-specific. Returns accepted job id, not goal completion or playback. status/read/inputs/list query original evidence, wait is cancellable without cancelling the job, cancel closes local work but remote computation may continue. Unknown submissions are never retried automatically. No hidden planner, game connection, voice identity guarantee or automatic publishing.",
+      "description": "Image, video and music creation through explicitly configured providers. Read capabilities first. generate needs kind, a final host-written prompt and stable request_id. References use Core/Persona handles with explicit roles; put one edit-target/scene-layout first, identity sheets after it. parameters are provider-specific. Returns accepted job id, not goal completion or playback. status/read/inputs/list query original evidence, wait is cancellable without cancelling the job, cancel closes local work but remote computation may continue. reconcile takes only id and reads the accepted original provider task; it requires a recorded matching provider instance, never resubmits and preserves the prior failure. Unknown submissions are never retried automatically. No hidden planner, game connection, voice identity guarantee or automatic publishing.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -12,6 +12,7 @@
             "enum": [
               "capabilities",
               "generate",
+              "reconcile",
               "status",
               "read",
               "inputs",

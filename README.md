@@ -17,7 +17,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 
 - aigc_help：读取随包的 imagegen 创作指南。
 - aigc_query：只读查询能力、任务、原文、参考和作品，不设置执行屏障。
-- aigc_create：capabilities / generate / status / read / inputs / list / wait / cancel。
+- aigc_create：capabilities / generate / status / read / inputs / list / wait / cancel / reconcile。
 - aigc.job：终态事件，默认 flush，不强行打断正在说话或操作的 Agent。
 
 ~~~json
@@ -33,7 +33,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 }
 ~~~
 
-这些示例句柄是占位说明。generate 返回受理，不代表目标完成、播放或内容已采纳。用 aigc_query 和原 id 查询；inputs 查询原文与输入，read 显式读取成品。终态事件、重复请求和 list 返回元数据。wait 的取消只停止等待；cancel 关闭本机请求，不保证远端停止计算和计费。unknown 不自动重投。停用后禁止旧实例写回或投递。
+这些示例句柄是占位说明。generate 返回受理，不代表目标完成、播放或内容已采纳。用 aigc_query 和原 id 查询；inputs 查询原文与输入，read 显式读取成品。终态事件、重复请求和 list 返回元数据。wait 的取消只停止等待；cancel 关闭本机请求，不保证远端停止计算和计费。unknown 不自动重投。支持恢复查询的供应商可用 `{"action":"reconcile","id":"原任务号"}` 取回原任务，保留此前失败记录；它不会再次生成。停用后禁止旧实例写回或投递。
 
 ## 供应商
 
@@ -42,7 +42,7 @@ World 不直接调用其他 World、Persona 工具或读取记忆目录。素材
 | 类型 | 已实现适配 |
 |---|---|
 | 图片 | 明确配置的 FLUX 3 ComfyUI、阿里百炼图像接口、火山方舟图像接口 |
-| 视频 | 百炼 Wan2.7 文生视频、agent-aigc-gateway/v1 |
+| 视频 | 显式配置的本地 ComfyUI 工作流、百炼 Wan2.7 文生视频、agent-aigc-gateway/v1 |
 | 音乐 | fal MiniMax Music 队列、原 YuE 歌曲网关、agent-aigc-gateway/v1 |
 
 原生文生视频与音乐端点的参考图／歌手参考上限为 0；不伪装成支持人物一致性或声音克隆。视频与歌曲下载只核对容器签名；内容、时长、歌词、人物一致性和听感仍需实际检查。接口实现通过离线夹具验收不代表这些云端模型已实际付费生成。
