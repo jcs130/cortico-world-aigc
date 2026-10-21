@@ -83,3 +83,10 @@ it('reconciles a gateway task through GET only',async()=>{
  expect(http.mock.calls.every(([,options])=>!options?.method||options.method==='GET')).toBe(true);
  expect(http.mock.calls.map(([url])=>new URL(url).pathname)).toEqual(['/base/jobs/original','/out.mp4']);
 });
+it('preserves bounded validation diagnostics without copying arbitrary provider error text',async()=>{
+ const http=vi.fn().mockResolvedValueOnce(Response.json({jobId:'original',state:'failed',failureCode:'asr_process_failed',validationPhase:'asr',validationExitCode:7,error:'private credential must not propagate'}));
+ const port=createMediaPort('music',{...config,provider:'yue-gateway'},{fetch:http,env:{FIXTURE_KEY:'fixture'}})!;
+ await expect(port.generate({...input('music'),parameters:{instrumental:true,durationSec:30}},new AbortController().signal)).rejects.toMatchObject({
+  evidence:{providerState:'failed',failureCode:'asr_process_failed',validationPhase:'asr',validationExitCode:7}
+ });
+});

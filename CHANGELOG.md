@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-dev.20261021.2
+
+- Allow explicit revalidation of a retained audio file after automatic validation failure, preserving the old attempt and running every publication gate again without generation.
+- Persist safe validation phases, ASR exit codes and bounded failure codes through the gateway and SDK instead of guessing which check failed.
+
 ## 0.1.0-dev.20261021.1
 
 - Match Cortico configuration round trips: use comma-separated result hosts and expose generation, polling and local workflow settings.

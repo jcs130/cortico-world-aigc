@@ -642,6 +642,36 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(len(self.services.submissions), 1)
         self.assertEqual(self.gateway.revalidate(job["jobId"]), ready)
 
+    def test_failed_automatic_asr_can_revalidate_original_audio_with_safe_phase_evidence(self):
+        self.automatic()
+        def fail():
+            raise gateway_module.ValidationFailure('asr_process_failed', 7)
+        self.services.asr = fail
+        job = self.await_state(self.gateway.enqueue(REQUEST)['jobId'])
+        self.assertEqual(job['state'], 'failed')
+        self.assertEqual(job['failureCode'], 'asr_process_failed')
+        self.assertEqual(job['validationPhase'], 'asr')
+        self.assertEqual(job['validationExitCode'], 7)
+        self.services.asr = lambda: transcript_for(REQUEST['lyrics'])
+        self.gateway.revalidate(job['jobId'])
+        ready = self.await_state(job['jobId'])
+        self.assertEqual(ready['state'], 'ready')
+        self.assertNotIn('failureCode', ready)
+        self.assertEqual(len(self.services.submissions), 1)
+        prior = json.loads((self.state/'artifacts'/job['jobId']/'validation-attempt-1.json').read_text(encoding='utf-8'))
+        self.assertEqual(prior['state'], 'failed')
+        self.assertEqual(prior['validationExitCode'], 7)
+
+    def test_memory_release_failure_is_distinct_from_asr_and_lyric_failure(self):
+        self.automatic()
+        def fail(cancelled):
+            raise gateway_module.NeedsReview()
+        self.services.release_generation_memory = fail
+        job = self.await_state(self.gateway.enqueue(REQUEST)['jobId'])
+        self.assertEqual(job['failureCode'], 'validation_release_generation_memory_unconfirmed')
+        self.assertEqual(job['validationPhase'], 'release-generation-memory')
+        self.assertFalse((self.state/'artifacts'/job['jobId']/'asr.json').exists())
+
     def test_duplicate_active_revalidation_is_idempotent_and_cancellable(self):
         self.services.asr = lambda: {"text": "", "segments": []}
         job = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])

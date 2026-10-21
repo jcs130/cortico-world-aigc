@@ -94,6 +94,13 @@ class NeedsReview(Exception):
     pass
 
 
+class ValidationFailure(NeedsReview):
+    """Safe machine diagnostics; never includes external exception text or credentials."""
+    def __init__(self, code: str, exit_code: int | None = None):
+        self.code = code
+        self.exit_code = exit_code
+
+
 class GenerationTimeout(NeedsReview):
     pass
 
@@ -777,10 +784,18 @@ class ExternalServices:
         ffmpeg_path = configured_ffmpeg if "/" in configured_ffmpeg or "\\" in configured_ffmpeg else shutil.which(configured_ffmpeg)
         if ffmpeg_path:
             environment["PATH"] = str(Path(ffmpeg_path).resolve().parent) + os.pathsep + environment.get("PATH", "")
-        result = subprocess.run(command, capture_output=True, timeout=cfg["timeoutSec"], check=True, creationflags=flags, env=environment)
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=cfg["timeoutSec"], check=True, creationflags=flags, env=environment)
+        except subprocess.TimeoutExpired:
+            raise ValidationFailure("asr_timeout") from None
+        except subprocess.CalledProcessError as error:
+            raise ValidationFailure("asr_process_failed", error.returncode) from None
         if len(result.stdout) > 2 * 1024 * 1024:
             raise NeedsReview()
-        return json.loads(result.stdout)
+        try:
+            return json.loads(result.stdout)
+        except (ValueError, UnicodeError):
+            raise ValidationFailure("asr_invalid_response") from None
 
     def voice_process(self, source: Path, directory: Path, seed: int, cancelled, on_stage):
         return voice_module.run_conversion(self.cfg["voiceConversion"], source, directory, seed, cancelled, on_stage)
@@ -871,6 +886,9 @@ class MusicGenerationGateway:
         result["reviewMode"] = self.cfg["review"]["mode"]
         if job.get("failureCode"):
             result["failureCode"] = job["failureCode"]
+        for key in ("validationPhase", "validationExitCode"):
+            if key in job:
+                result[key] = job[key]
         if job.get("generationExtensions"):
             result["generationExtensions"] = job["generationExtensions"]
         if job["state"] == "review" and self.cfg["review"]["mode"] == "automatic":
@@ -946,7 +964,7 @@ class MusicGenerationGateway:
                 raise GatewayError("找不到该创作任务。", 404)
             if job["state"] == "ready" or job["state"] not in TERMINAL and job.get("revalidation") is True:
                 return self._public(job)
-            if job["state"] not in ("review", "rejected") or job.get("inputApproved") is not True or not job.get("promptId"):
+            if job["state"] not in ("review", "rejected", "failed") or job.get("inputApproved") is not True or not job.get("promptId"):
                 raise GatewayError("仅可重新校验已审核输入、已生成音频的任务。", 409)
             if sum(item["state"] not in TERMINAL for item in self.jobs.values()) >= self.cfg["limits"]["maxQueue"]:
                 raise GatewayError("创作队列已满，请稍后再试。", 429)
@@ -956,7 +974,7 @@ class MusicGenerationGateway:
             attempt = job.get("validationAttempt", 0) + 1
             atomic_json(audio.parent / ("validation-attempt-" + str(attempt) + ".json"), job)
             job.update(revalidation=True, validationAttempt=attempt, generatedAudioSha256=voice_module.digest(audio))
-            for key in ("contentApproved", "audioValidated", "trackId"):
+            for key in ("contentApproved", "audioValidated", "trackId", "failureCode", "validationExitCode", "validationPhase"):
                 job.pop(key, None)
             self._state(job, "validating")
             self.pending.append(job_id)
@@ -1022,13 +1040,22 @@ class MusicGenerationGateway:
                 with self.condition:
                     job["failureCode"] = "generation_timeout"
                     self._state(job, "failed" if self.cfg["review"]["mode"] == "automatic" else "review")
-            except NeedsReview:
+            except NeedsReview as error:
                 with self.condition:
+                    job.setdefault("failureCode", getattr(error, "code", "validation_" + job.get("validationPhase", "unknown").replace("-", "_") + "_unconfirmed"))
+                    if isinstance(error, ValidationFailure) and error.exit_code is not None:
+                        job["validationExitCode"] = error.exit_code
                     self._state(job, "failed" if self.cfg["review"]["mode"] == "automatic" else "review")
             except Exception:
                 # External exceptions may contain credentials or untrusted content.
                 with self.condition:
+                    job.setdefault("failureCode", "creation_failed")
                     self._state(job, "failed")
+
+    def _validation_phase(self, job: dict, phase: str) -> None:
+        with self.condition:
+            job["validationPhase"] = phase
+            self._save(job)
 
     def _check_review(self, job: dict, phase: str, transcript: dict | None = None) -> None:
         automatic = self.cfg["review"]["mode"] == "automatic"
@@ -1147,11 +1174,14 @@ class MusicGenerationGateway:
         artifacts, audio = generated.parent, generated.parent / "song.wav"
         convert_voice = self.cfg["voiceConversion"]["enabled"] and not request.get("instrumental")
         prepared = artifacts / "prepared.wav" if convert_voice else audio
+        self._validation_phase(job, "prepare-audio")
         prepare_wav(generated, prepared, request["durationSec"])
+        self._validation_phase(job, "release-generation-memory")
         self.services.release_generation_memory(lambda: self._cancelled(job) or self.stopping.is_set())
         if self._cancelled(job) or self.stopping.is_set():
             return
         if convert_voice:
+            self._validation_phase(job, "voice-conversion")
             def on_stage(stage, message):
                 with self.condition:
                     if not self._cancelled(job):
@@ -1178,6 +1208,7 @@ class MusicGenerationGateway:
             except Exception:
                 # No fallback to the original singer and no automatic resubmission.
                 raise NeedsReview() from None
+        self._validation_phase(job, "audio-format")
         duration = inspect_wav(audio, request["durationSec"])
         if self._cancelled(job):
             return
@@ -1185,9 +1216,11 @@ class MusicGenerationGateway:
             # Score validation alone cannot establish that audio has no speech.
             # Keep the independent decode, including unexpected words, for inspection.
             try:
+                self._validation_phase(job, "asr")
                 transcript = self.services.transcribe(audio)
                 atomic_json(artifacts / "asr.json", transcript)
                 validate_instrumental_transcript(transcript, self.cfg["asr"]["backend"])
+                self._validation_phase(job, "audio-review")
                 self._check_review(job, "audio", transcript)
             except (NeedsReview, Rejected):
                 raise
@@ -1196,13 +1229,16 @@ class MusicGenerationGateway:
             self._finish(job, audio, [])
             return
         try:
+            self._validation_phase(job, "asr")
             transcript = validate_transcript(self.services.transcribe(audio))
             atomic_json(artifacts / "asr.json", transcript)
             if transcript.get("recognizer", "whisper") != self.cfg["asr"]["backend"]:
                 raise NeedsReview()
             # Decode quality is checked before semantic review so uncertain audio
             # cannot be reported as established unsafe content.
+            self._validation_phase(job, "asr-anchors")
             transcript_anchors(transcript, duration)
+            self._validation_phase(job, "audio-review")
             self._check_review(job, "audio", transcript)
             lyric_transcript = transcript
             if job.get("voiceConditioned") is True:
@@ -1215,6 +1251,7 @@ class MusicGenerationGateway:
                 else:
                     lyric_transcript = validate_transcript(self.services.transcribe(artifacts / "vocals.wav"))
                 atomic_json(artifacts / "asr-vocals.json", lyric_transcript)
+            self._validation_phase(job, "lyrics-alignment")
             lines = align_lyrics(request["lyrics"], lyric_transcript, duration, self.cfg["validation"])
         except (Rejected, NeedsReview):
             raise

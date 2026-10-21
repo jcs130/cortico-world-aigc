@@ -151,6 +151,10 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
         : await json(new URL('jobs', base), signal, { method: 'POST', body: JSON.stringify(body) });
       const id = safeId(result.job_id ?? result.jobId); input.onAccepted?.(id);
       if (originalId && id !== originalId) throw new Error('Provider returned a different original task');
+      const diagnostics = () => Object.fromEntries(Object.entries(result).filter(([key,value]) =>
+        key === 'failureCode' && typeof value === 'string' && /^[a-z_]{1,80}$/.test(value)
+        || key === 'validationPhase' && typeof value === 'string' && /^[a-z-]{1,80}$/.test(value)
+        || key === 'validationExitCode' && Number.isSafeInteger(value)));
       for (;;) {
         const state = result.status ?? result.state;
         if (state === 'succeeded' || legacyYue && ['ready', 'review'].includes(state)
@@ -179,11 +183,11 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
           } else throw new Error('Completed gateway job has no retrievable artifact');
           return { artifacts, model: config.model, providerRequestId: id, evidence: {
             upstreamState: state, retainedCandidate, contentApproved: false, lyricsVerified: false,
-            adoptionRequired: true, singingVoiceVerified: false } };
+            adoptionRequired: true, singingVoiceVerified: false, ...diagnostics() } };
         }
         if (!['accepted', 'queued', 'running', 'generating', 'validating', 'reviewing'].includes(state))
           throw new CreationProviderError('Gateway original task ended with state ' + String(state), id,
-            state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : undefined, { providerState: state });
+            state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : undefined, { providerState: state, ...diagnostics() });
         await delay(config.pollMs, undefined, { signal });
         result = await json(new URL('jobs/' + id, base), signal);
       }
