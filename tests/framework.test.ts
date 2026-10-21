@@ -26,6 +26,7 @@ it('passes actual Cortico 0.2.4 manifest, configuration, dry-mount and full self
 it('round-trips settings with the real host instead of coercing host lists into numeric pairs', () => {
   const cfg = aigcDefaults();
   cfg.video.resultHosts = '127.0.0.1,files.example';
+  cfg.video.timeoutMs = 3600000;
   const group = creationConfigGroup();
   const values = readGroupValues({ worlds: { aigc: cfg } } as any, group);
   expect(values['worlds.aigc.video.resultHosts']).toBe('127.0.0.1,files.example');
@@ -33,5 +34,5 @@ it('round-trips settings with the real host instead of coercing host lists into 
   expect(values['worlds.aigc.image.flux3.steps']).toBe(16);
   expect(coerceGroupValues(group, { ...values, 'worlds.aigc.music.libraryDirectory': 'D:/media/music' }))
     .toMatchObject({ values: { 'worlds.aigc.video.resultHosts': '127.0.0.1,files.example',
-      'worlds.aigc.music.libraryDirectory': 'D:/media/music' } });
+      'worlds.aigc.music.libraryDirectory': 'D:/media/music', 'worlds.aigc.video.timeoutMs': 3600000 } });
 });

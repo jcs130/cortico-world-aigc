@@ -11,7 +11,7 @@ export function creationConfigGroup(): ConfigGroup {
       type: 'string', title: kind + ' ' + key, 'x-hot': true,
       ...(key === 'apiKeyEnv' ? { description: 'Only the deployment secret/environment variable name, not the key value' } : {}),
     };
-    properties[prefix + 'timeoutMs'] = { type: 'integer', title: kind + ' 等待上限', minimum: 1000, maximum: 1800000, 'x-hot': true };
+    properties[prefix + 'timeoutMs'] = { type: 'integer', title: kind + ' 等待上限', minimum: 1000, maximum: kind === 'video' ? 3600000 : 1800000, 'x-hot': true };
     properties[prefix + 'maxReferences'] = { type: 'integer', title: kind + ' 参考数上限', minimum: kind === 'image' ? 1 : 0, maximum: 14, 'x-hot': true };
     // Cortico's editable arrays are numeric pairs, not string lists.
     properties[prefix + 'resultHosts'] = { type: 'string', title: kind + ' 结果下载域名（逗号分隔）', 'x-hot': true };
