@@ -252,6 +252,7 @@ export class AigcStudio {
       if (args.parameters !== undefined && (!args.parameters || typeof args.parameters !== 'object' || Array.isArray(args.parameters))) throw new Error('parameters must be an object');
       if (provider.capabilities.parameterKeys && Object.keys(args.parameters ?? {}).some(key => !provider.capabilities.parameterKeys!.includes(key)))
         throw new Error('Unsupported parameters for this provider; supported keys: ' + provider.capabilities.parameterKeys.join(', '));
+      provider.validateParameters?.((args.parameters ?? {}) as Record<string, unknown>);
       const resolved: ResolvedReference[] = refs.map((ref: unknown) => {
         if (!ref || typeof ref !== 'object') throw new Error('Reference needs handle and explicit role');
         const r = ref as ResolvedReference;

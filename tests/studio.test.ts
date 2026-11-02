@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AigcStudio } from '../src/core/studio.ts';
 import { prepareCreativeContext } from '../src/core/prompt.ts';
-import { aigcDefaults } from '../src/core/providers.ts';
+import { aigcDefaults, createMediaPort } from '../src/core/providers.ts';
 import { AppearanceLibrary, appearanceTool } from '../src/persona/index.ts';
 import definition, { AigcWorld } from '../src/index.ts';
 import { CreationProviderError } from '../src/core/errors.ts';
@@ -16,6 +16,27 @@ const directory = () => { const dir = mkdtempSync(join(tmpdir(), 'aigc-')); dire
 afterEach(() => { vi.restoreAllMocks(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const request = { action: 'generate', kind: 'image', request_id: 'stable', prompt: 'A quiet warm village' };
 const fakeHost = () => ({ blob: vi.fn(() => image), pushEvent: vi.fn(async (_event: any, _options?: any) => ({})), log: { warn: vi.fn() } }) satisfies CreationHost;
+it('rejects an invalid YuE song before creating a job or consuming its request ID', async () => {
+  const http = vi.fn(async () => Response.json({ job_id: 'a'.repeat(32), status: 'failed' }));
+  const provider = createMediaPort('music', { provider: 'yue-gateway', endpoint: 'http://127.0.0.1:8195/',
+    model: 'yue2', apiKeyEnv: '', resultHosts: [], timeoutMs: 10000, pollMs: 50, maxReferences: 0 }, { fetch: http });
+  const studio = new AigcStudio({ directory: directory(), provider: () => provider });
+  studio.start(fakeHost());
+  const song = { action: 'generate', kind: 'music', request_id: 'one-song', prompt: 'An original quiet song' };
+  for (const parameters of [{}, { durationSec: 45 }, { durationSec: 10, lyrics: '测试歌词' }]) {
+    const rejected = await studio.execute({ ...song, parameters });
+    expect(rejected.failed).toBe(true);
+    expect(rejected.text).toContain('durationSec 30..120');
+    expect(JSON.parse((await studio.execute({ action: 'list' })).text)).toEqual([]);
+  }
+  expect(http).not.toHaveBeenCalled();
+  const accepted = JSON.parse((await studio.execute({ ...song, parameters: { durationSec: 45, lyrics: '测试歌词' } })).text);
+  expect(accepted.status).toBe('accepted');
+  await finished(studio, accepted.id);
+  expect(http).toHaveBeenCalledOnce();
+  expect(studio.get(accepted.id)).toMatchObject({ status: 'failed', providerRequestId: 'a'.repeat(32) });
+  studio.stop();
+});
 it('reports one invalid provider without hiding the other configured capabilities', () => {
   const studio = new AigcStudio({ provider: kind => {
     if (kind === 'video') throw Error('Invalid URL including private configuration');

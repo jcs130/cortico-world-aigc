@@ -81,11 +81,18 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
     if (!response.ok) { await response.body?.cancel(); throw new Error('Media output download failed; do not regenerate'); }
     return { bytes: await boundedBody(response, 256 * 1024 * 1024, signal), mime };
   };
+  const validateParameters = (parameters: Readonly<Record<string, unknown>>) => {
+    if (parameterKeys && Object.keys(parameters).some(key => !parameterKeys.includes(key))) throw new Error('Unsupported provider parameter');
+    if (config.provider === 'yue-gateway' && (!Number.isInteger(parameters.durationSec)
+      || Number(parameters.durationSec) < 30 || Number(parameters.durationSec) > 120
+      || parameters.instrumental !== true && (typeof parameters.lyrics !== 'string' || !parameters.lyrics.trim())))
+      throw new Error('YuE bridge requires durationSec 30..120 and lyrics or instrumental=true; voice cloning is not implied');
+  };
   const run = async (input: GenerationInput, parent: AbortSignal, originalId?: string): Promise<GenerationResult> => {
       const signal = AbortSignal.any([parent, AbortSignal.timeout(config.timeoutMs)]);
       signal.throwIfAborted();
       if (input.kind !== kind || input.references.length > config.maxReferences) throw new Error('Unsupported media kind/references');
-      if (parameterKeys && Object.keys(input.parameters).some(key => !parameterKeys.includes(key))) throw new Error('Unsupported provider parameter');
+      validateParameters(input.parameters);
       const p = input.parameters;
       if (config.provider === 'bailian-wan27') {
         if (!/^wan2\.7-t2v(?:-|$)/.test(config.model)) throw new Error('This adapter implements only the documented Wan2.7 text-to-video protocol');
@@ -144,9 +151,7 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
         style: p.style ?? input.prompt, requestKey: input.requestId }
         : { schema: 'agent-aigc-gateway/v1', kind, model: config.model, request_id: input.requestId,
           prompt: input.prompt, parameters: p, references };
-      if (legacyYue && (input.references.length || !Number.isInteger(p.durationSec) || Number(p.durationSec) < 30
-        || Number(p.durationSec) > 120 || p.instrumental !== true && !String(p.lyrics ?? '').trim()))
-        throw new Error('YuE bridge requires durationSec 30..120 and lyrics or instrumental=true; voice cloning is not implied');
+      if (legacyYue && input.references.length) throw new Error('YuE bridge does not accept audio references; voice cloning is not implied');
       let result = originalId ? await json(new URL('jobs/' + safeId(originalId), base), signal)
         : await json(new URL('jobs', base), signal, { method: 'POST', body: JSON.stringify(body) });
       const id = safeId(result.job_id ?? result.jobId); input.onAccepted?.(id);
@@ -196,6 +201,7 @@ export function createMediaPort(kind: 'video' | 'music', config: MediaProviderCo
     capabilities: { kind, generate: true, edit: !native && config.maxReferences > 0, maxReferences: config.maxReferences, provider: config.provider,
       instanceId:createHash('sha256').update(JSON.stringify([config.provider,endpoint.href,config.model])).digest('hex'),
       reconcile:!native, model: config.model, ...(parameterKeys ? { parameterKeys } : {}) },
+    validateParameters,
     generate:run,
     ...(!native ? {reconcile:(id:string,input:GenerationInput,signal:AbortSignal)=>run(input,signal,id)} : {}),
   };

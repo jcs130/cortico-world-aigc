@@ -27,6 +27,8 @@ export interface GenerationResult {
 export interface GenerationPort {
   capabilities: { kind: CreationKind; generate: boolean; edit: boolean; maxReferences: number; provider: string;
     model?: string; parameterKeys?: readonly string[]; requiredReferences?: number; instanceId?: string; reconcile?: boolean };
+  /** Synchronous admission checks; must not submit work or mutate provider state. */
+  validateParameters?(parameters: Readonly<Record<string, unknown>>): void;
   generate(input: GenerationInput, signal: AbortSignal): Promise<GenerationResult>;
   /** Retrieve an original provider task; never submit generation again. */
   reconcile?(providerRequestId: string, input: GenerationInput, signal: AbortSignal): Promise<GenerationResult>;
