@@ -886,6 +886,23 @@ class BoundaryTest(unittest.TestCase):
         with self.assertRaises(gateway_module.GatewayError):
             gateway_module.validate_request({**REQUEST, "title": "unsafe" * 1000})
 
+    def test_yue_duration_is_a_ceiling_not_a_padding_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, prepared = Path(directory) / 'source.wav', Path(directory) / 'prepared.wav'
+            samples = array.array('h', [round(6000 * math.sin(2 * math.pi * 220 * i / 8000)) for i in range(8000)])
+            with wave.open(str(source), 'wb') as audio:
+                audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(8000)
+                for _ in range(71): audio.writeframes(samples.tobytes())
+            with self.assertRaises(gateway_module.ValidationFailure) as error:
+                gateway_module.inspect_wav(source, 90)
+            self.assertEqual(error.exception.code, 'audio_duration_target_mismatch')
+            self.assertEqual(gateway_module.prepare_wav(source, prepared, 90, duration_is_limit=True), 71)
+            with wave.open(str(prepared)) as audio:
+                self.assertEqual(audio.getnframes(), 71 * 8000) # No padding or time stretching.
+            with self.assertRaises(gateway_module.ValidationFailure) as error:
+                gateway_module.inspect_wav(source, 60, duration_is_limit=True)
+            self.assertEqual(error.exception.code, 'audio_duration_limit_exceeded')
+
     def test_alignment_needs_real_word_anchors_and_does_not_share_repeated_chorus_times(self):
         lyrics = "听雨点\n听雨点"
         transcript = transcript_for(lyrics)

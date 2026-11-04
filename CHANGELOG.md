@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate YuE's `max_duration` as a ceiling rather than an exact-duration target. Preserve the minimum duration, audio energy, ASR confidence and full lyric-alignment checks; never pad shorter output to meet a target.
+
 - Identify the loaded music gateway implementation and source hash in health checks; the watchdog no longer treats a legacy service on the same port as the configured implementation.
 - Distinguish review transport/truncation failures and low-confidence ASR from content rejection. Preserve validation thresholds and original failed attempts.
 

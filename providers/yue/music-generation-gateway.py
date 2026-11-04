@@ -515,15 +515,20 @@ def validate_transcript(transcript: object) -> dict:
     return transcript
 
 
-def inspect_wav(path: Path, requested_duration: float) -> float:
+def inspect_wav(path: Path, requested_duration: float, *, duration_is_limit: bool = False) -> float:
     if path.stat().st_size > 268435456:
         raise NeedsReview()
     with wave.open(str(path), "rb") as audio:
         if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE" or not 1 <= audio.getnchannels() <= 2:
             raise NeedsReview()
         duration = audio.getnframes() / audio.getframerate()
-        if not 30 <= duration <= 120 or abs(duration - requested_duration) > max(5, requested_duration * 0.15):
-            raise NeedsReview()
+        if not 30 <= duration <= 120:
+            raise ValidationFailure('audio_duration_out_of_range')
+        if duration_is_limit:
+            if duration > requested_duration + 0.5:
+                raise ValidationFailure('audio_duration_limit_exceeded')
+        elif abs(duration - requested_duration) > max(5, requested_duration * 0.15):
+            raise ValidationFailure('audio_duration_target_mismatch')
         windows, active, peak, squared, total, last_active = 0, 0, 0, 0, 0, 0
         while True:
             raw = audio.readframes(max(1, audio.getframerate() // 10))
@@ -547,7 +552,7 @@ def inspect_wav(path: Path, requested_duration: float) -> float:
         return duration
 
 
-def prepare_wav(source: Path, destination: Path, requested_duration: float) -> float:
+def prepare_wav(source: Path, destination: Path, requested_duration: float, *, duration_is_limit: bool = False) -> float:
     if source.stat().st_size > 268435456:
         raise NeedsReview()
     temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")
@@ -575,7 +580,7 @@ def prepare_wav(source: Path, destination: Path, requested_duration: float) -> f
                     count = min(remaining, rate)
                     output.writeframes(audio.readframes(count))
                     remaining -= count
-        duration = inspect_wav(temporary, requested_duration)
+        duration = inspect_wav(temporary, requested_duration, duration_is_limit=duration_is_limit)
         os.replace(temporary, destination)
         return duration
     finally:
@@ -1193,8 +1198,11 @@ class MusicGenerationGateway:
         artifacts, audio = generated.parent, generated.parent / "song.wav"
         convert_voice = self.cfg["voiceConversion"]["enabled"] and not request.get("instrumental")
         prepared = artifacts / "prepared.wav" if convert_voice else audio
+        # YuE receives max_duration, not an exact-duration request. Shorter
+        # output still has to pass ASR, full lyric alignment and audio review.
+        duration_is_limit = self.cfg['musicModel'] == 'yue2'
         self._validation_phase(job, "prepare-audio")
-        prepare_wav(generated, prepared, request["durationSec"])
+        prepare_wav(generated, prepared, request["durationSec"], duration_is_limit=duration_is_limit)
         self._validation_phase(job, "release-generation-memory")
         self.services.release_generation_memory(lambda: self._cancelled(job) or self.stopping.is_set())
         if self._cancelled(job) or self.stopping.is_set():
@@ -1228,7 +1236,7 @@ class MusicGenerationGateway:
                 # No fallback to the original singer and no automatic resubmission.
                 raise NeedsReview() from None
         self._validation_phase(job, "audio-format")
-        duration = inspect_wav(audio, request["durationSec"])
+        duration = inspect_wav(audio, request["durationSec"], duration_is_limit=duration_is_limit)
         if self._cancelled(job):
             return
         if request.get("instrumental"):
