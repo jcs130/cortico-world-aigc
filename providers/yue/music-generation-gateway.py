@@ -10,6 +10,7 @@ import array
 import copy
 import difflib
 import functools
+import hashlib
 import importlib.util
 import json
 import math
@@ -47,6 +48,8 @@ _yue_spec.loader.exec_module(yue_module)
 TERMINAL = {"ready", "rejected", "review", "failed", "cancelled"}
 PLACEHOLDER = "正在创作 AI 歌曲"
 DESCRIPTION = "AI生成原创歌曲"
+IMPLEMENTATION = "cortico-world-aigc/yue"
+SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 MESSAGES = {
     "queued": "创作请求已排队。",
     "reviewing": "正在审核原创创作内容。",
@@ -440,8 +443,10 @@ def transcript_anchors(transcript: dict, duration: float) -> tuple[list[str], li
                 continue
             start, end = word.get("start"), word.get("end")
             probability = word.get("probability")
-            if not all(finite_number(value) for value in (start, end, probability)) or start < previous_end - 0.03 or start < 0 or end <= start or end > duration + 0.03 or not 0.45 <= probability <= 1:
-                raise NeedsReview()
+            if not all(finite_number(value) for value in (start, end, probability)) or start < previous_end - 0.03 or start < 0 or end <= start or end > duration + 0.03:
+                raise ValidationFailure("asr_timing_unconfirmed")
+            if not 0.45 <= probability <= 1:
+                raise ValidationFailure("asr_word_confidence_low")
             start = max(previous_end, start)
             for i, char in enumerate(text):
                 chars.append(char)
@@ -620,7 +625,10 @@ class ExternalServices:
             raise GatewayError("审核密钥缺失或无效；未调用模型。")
         headers = {"Authorization": "Bearer " + key} if key else {}
         result = self._json(cfg["endpoint"], payload, cfg["timeoutSec"], headers)
-        value = result["choices"][0]["message"]["content"]
+        choice = result["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValidationFailure("review_output_truncated")
+        value = choice["message"]["content"]
         return parse_review_content(value)
 
     def generation_activity(self, prompt_id: str) -> str:
@@ -886,7 +894,7 @@ class MusicGenerationGateway:
         result["reviewMode"] = self.cfg["review"]["mode"]
         if job.get("failureCode"):
             result["failureCode"] = job["failureCode"]
-        for key in ("validationPhase", "validationExitCode"):
+        for key in ("validationPhase", "validationExitCode", "reviewFailure"):
             if key in job:
                 result[key] = job[key]
         if job.get("generationExtensions"):
@@ -974,7 +982,7 @@ class MusicGenerationGateway:
             attempt = job.get("validationAttempt", 0) + 1
             atomic_json(audio.parent / ("validation-attempt-" + str(attempt) + ".json"), job)
             job.update(revalidation=True, validationAttempt=attempt, generatedAudioSha256=voice_module.digest(audio))
-            for key in ("contentApproved", "audioValidated", "trackId", "failureCode", "validationExitCode", "validationPhase"):
+            for key in ("contentApproved", "audioValidated", "trackId", "failureCode", "validationExitCode", "validationPhase", "reviewFailure"):
                 job.pop(key, None)
             self._state(job, "validating")
             self.pending.append(job_id)
@@ -1068,14 +1076,25 @@ class MusicGenerationGateway:
                 review_decision(verdict)
             except Rejected:
                 raise
-            except Exception:
+            except Exception as error:
                 if attempt + 1 == attempts:
                     with self.condition:
                         job["failureCode"] = phase + "_review_unconfirmed"
+                        # A failed transport/parse is not a content rejection. Never expose
+                        # exception text, request bodies, credentials or provider URLs.
+                        if isinstance(error, ValidationFailure):
+                            job["reviewFailure"] = error.code
+                        elif isinstance(error, urllib.error.HTTPError):
+                            job["reviewFailure"] = "http_" + str(error.code)
+                        elif isinstance(error, (TimeoutError, urllib.error.URLError)):
+                            job["reviewFailure"] = "transport_unavailable"
+                        else:
+                            job["reviewFailure"] = "verdict_unconfirmed"
                     raise NeedsReview() from None
                 if self.stopping.wait(self.cfg["review"]["retryDelaySec"]):
                     raise NeedsReview()
             else:
+                job.pop("reviewFailure", None)
                 atomic_json(self.state_dir / "artifacts" / job["jobId"] / ("review-" + phase + ".json"),
                             {"model": self.cfg["review"]["model"], "at": now_iso(), "attempt": attempt + 1, "verdict": verdict})
                 return
@@ -1350,7 +1369,7 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
                 if self.path == "/health":
                     asr = gateway.cfg["asr"]
                     configured = bool(asr.get("modelDir") and asr.get("alignerDir")) if asr["backend"] == "qwen3" else bool(asr.get("modelFile"))
-                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "asrConfigured": configured, "asrBackend": asr["backend"], "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"], "musicModel": gateway.cfg["musicModel"], "reviewMode": gateway.cfg["review"]["mode"], "reviewModel": gateway.cfg["review"]["model"], "instrumentalSupported": gateway.cfg["musicModel"] == "yue2" and asr["backend"] == "qwen3"})
+                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "implementation": IMPLEMENTATION, "sourceSha256": SOURCE_SHA256, "asrConfigured": configured, "asrBackend": asr["backend"], "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"], "musicModel": gateway.cfg["musicModel"], "reviewMode": gateway.cfg["review"]["mode"], "reviewModel": gateway.cfg["review"]["model"], "instrumentalSupported": gateway.cfg["musicModel"] == "yue2" and asr["backend"] == "qwen3"})
                 elif self.path == "/jobs":
                     self._reply(200, gateway.list())
                 elif re.fullmatch(r"/jobs/[a-f0-9]{32}", self.path):

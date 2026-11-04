@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Identify the loaded music gateway implementation and source hash in health checks; the watchdog no longer treats a legacy service on the same port as the configured implementation.
+- Distinguish review transport/truncation failures and low-confidence ASR from content rejection. Preserve validation thresholds and original failed attempts.
+
 ## 0.1.0-rc.1
 
 - Prepare the first public beta for Cortico 0.2.4 / World API 6, with offline self-description and independent SDK/MCP exports.

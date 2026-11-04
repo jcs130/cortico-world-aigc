@@ -10,6 +10,7 @@ if (-not $GatewayScript) { $GatewayScript = Join-Path (Split-Path $MyInvocation.
 $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
 $PythonExe = (Resolve-Path -LiteralPath $PythonExe).Path
 $GatewayScript = (Resolve-Path -LiteralPath $GatewayScript).Path
+$expectedSourceHash = (Get-FileHash -LiteralPath $GatewayScript -Algorithm SHA256).Hash.ToLowerInvariant()
 foreach ($path in @($ConfigPath, $PythonExe, $GatewayScript)) {
     if ($path.Contains('"') -or $path.Contains("`r") -or $path.Contains("`n")) { throw 'Invalid process argument path.' }
 }
@@ -30,7 +31,7 @@ function Write-WatchLog([string]$event, $details) {
 function Read-GatewayHealth {
     try {
         $health = Invoke-RestMethod -Uri "http://${address}:$port/health" -TimeoutSec 3
-        if ($health.ok -eq $true -and $health.service -eq 'original-song-gateway') { return $true }
+        if ($health.ok -eq $true -and $health.service -eq 'original-song-gateway' -and $health.implementation -eq 'cortico-world-aigc/yue' -and $health.sourceSha256 -eq $expectedSourceHash -and $health.reviewModel -eq $config.review.model) { return $true }
     } catch { }
     return $false
 }

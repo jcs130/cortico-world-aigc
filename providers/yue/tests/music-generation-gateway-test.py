@@ -98,6 +98,44 @@ class FakeServices:
 
 
 class GatewayTest(unittest.TestCase):
+    def test_health_identifies_loaded_source_without_private_configuration(self):
+        self.gateway.cfg['port'] = 0
+        server = gateway_module.make_server(self.gateway)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with gateway_module.urllib.request.urlopen('http://127.0.0.1:' + str(server.server_port) + '/health') as response:
+                value = json.loads(response.read())
+            self.assertEqual(value['implementation'], 'cortico-world-aigc/yue')
+            self.assertEqual(value['sourceSha256'], gateway_module.SOURCE_SHA256)
+            self.assertEqual(value['reviewModel'], 'deployment-model')
+            self.assertNotIn('private-test-key', json.dumps(value))
+            self.assertNotIn(str(self.state), json.dumps(value))
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_review_transport_failure_is_not_a_rejection_and_does_not_leak_error_text(self):
+        self.automatic()
+        def unavailable(request):
+            raise gateway_module.urllib.error.HTTPError('https://private.invalid/key', 429, 'private-test-key', {}, None)
+        self.services.review_input = unavailable
+        job = self.await_state(self.gateway.enqueue(REQUEST)['jobId'])
+        self.assertEqual(job['state'], 'failed')
+        self.assertEqual(job['failureCode'], 'input_review_unconfirmed')
+        self.assertEqual(job['reviewFailure'], 'http_429')
+        self.assertNotIn('private-test-key', json.dumps(job))
+        self.assertEqual(self.services.submissions, [])
+
+    def test_low_confidence_asr_is_diagnosed_without_weakening_validation(self):
+        self.automatic()
+        transcript = transcript_for(REQUEST['lyrics'])
+        transcript['segments'][0]['words'][0]['probability'] = 0.4
+        self.services.asr = lambda: transcript
+        job = self.await_state(self.gateway.enqueue(REQUEST)['jobId'])
+        self.assertEqual(job['failureCode'], 'asr_word_confidence_low')
+        self.assertEqual(job['validationPhase'], 'asr-anchors')
+        self.assertFalse((self.music / 'catalog.json').exists())
+
     def test_instrumental_publishes_empty_lyrics_after_independent_empty_decode(self):
         self.gateway.cfg['musicModel'] = 'yue2'
         self.gateway.cfg['asr']['backend'] = 'qwen3'
@@ -1073,6 +1111,15 @@ class BoundaryTest(unittest.TestCase):
             self.assertNotIn(request["requestText"], messages[0]["content"])
             self.assertNotIn("requesterKey", messages[1]["content"])
             self.assertNotIn("requestKey", messages[1]["content"])
+
+    def test_truncated_review_is_not_accepted_even_if_partial_content_is_valid_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = gateway_module.normalize_config({"stateDir": directory, "musicDir": directory, "generationMode": "text-to-music", "promptTemplateFile": "template.json", "comfy": {"endpoint": "http://generation.invalid"}, "review": {"endpoint": "http://review.invalid", "model": "deployment-model"}})
+            services = gateway_module.ExternalServices(cfg)
+            services._json = lambda *args, **kwargs: {"choices": [{"finish_reason": "length", "message": {"content": json.dumps(ALLOW)}}]}
+            with self.assertRaises(gateway_module.ValidationFailure) as caught:
+                services.review('input', REQUEST)
+            self.assertEqual(caught.exception.code, 'review_output_truncated')
 
     def test_review_resolves_explicit_environment_key_without_persisting_it(self):
         with tempfile.TemporaryDirectory() as directory:
